@@ -30,12 +30,29 @@ func dotProduct_sme(aSlice, bSlice []float32, aIdx, bIdx int, n int64) float32 {
 	return result
 }
 
-// dotProductInnerLoopSME is a wrapper that uses SME to accelerate the inner dot product loop.
-// It processes the entire inner loop with SME for maximum performance.
+// dotProductInnerLoopSME accelerates the dot product inner loop using ARM SME.
 //
-// This function matches the signature needed by buildDotGeneralKernel to replace the inner loop.
+// This function computes 4 independent dot products in parallel:
+//   sum0 = dot(lhs[lhsIdx:lhsIdx+blockDim], rhs[rhsIdx:rhsIdx+blockDim])
+//   sum1 = dot(lhs[lhsIdx:lhsIdx+blockDim], rhs[rhsIdx+blockDim:rhsIdx+2*blockDim])
+//   sum2 = dot(lhs[lhsIdx:lhsIdx+blockDim], rhs[rhsIdx+2*blockDim:rhsIdx+3*blockDim])
+//   sum3 = dot(lhs[lhsIdx:lhsIdx+blockDim], rhs[rhsIdx+3*blockDim:rhsIdx+4*blockDim])
 //
-// Performance: ~2.51x faster than scalar for large vectors (n >= 2048)
+// The function is designed as a drop-in replacement for the scalar inner loop in
+// buildDotGeneralKernel. It processes entire vectors using SME's variable-length
+// SIMD instructions with 4-way instruction-level parallelism to hide latency.
+//
+// Performance characteristics (Apple M4 Max):
+//   blockDim=64:   ~1.5x faster than scalar
+//   blockDim=512:  ~2.0x faster than scalar
+//   blockDim=2048: ~2.5x faster than scalar
+//
+// The assembly implementation uses:
+// - SME streaming mode (smstart/smstop)
+// - Variable-length vector loads (ld1w)
+// - Fused multiply-add (fmla) for efficiency
+// - ILP-4 (4 independent accumulators) to hide latency
+// - Prefetching (256 bytes ahead) for memory bandwidth
 func dotProductInnerLoopSME(lhsFlat, rhsFlat, outputFlat []float32,
 	lhsIdx, rhsIdx, outputIdx, blockDim int) (sum0, sum1, sum2, sum3 float32) {
 

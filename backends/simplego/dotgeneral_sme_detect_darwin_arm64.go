@@ -30,5 +30,15 @@ func detectSME() bool {
 }
 
 // hasSME indicates whether SME SIMD optimizations are available.
-// SME provides 512-bit vectors and is available on Apple M4 and later.
+//
+// SME (Scalable Matrix Extension) is ARM's latest SIMD technology, providing:
+// - Variable-length vectors (128-2048 bits, determined at runtime)
+// - Streaming mode optimized for matrix operations
+// - Hardware support for FP32 multiply-accumulate operations
+//
+// Available on:
+// - Apple M4 and later (2024+)
+// - ARM Neoverse V2 and later server CPUs
+//
+// Detection: Uses macOS sysctl hw.optional.arm.FEAT_SME
 var hasSME = detectSME()
