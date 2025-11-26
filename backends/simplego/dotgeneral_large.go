@@ -516,30 +516,14 @@ func buildDotGeneralKernel[T PODNumericConstraints](lhs, rhs, output *Buffer, bl
 				lhsIdx := baseLhsIdx
 				var sum0, sum1, sum2, sum3 T
 
-				// SIMD acceleration for float32 on ARM64:
-				// - SME (Apple M4+): 512-bit vectors, best for large vectors (>= 512)
-				// - NEON (all ARM64): 128-bit vectors, best for smaller vectors
-				// SME has streaming mode overhead, so NEON is faster for small/medium vectors.
-				// We use Group4 optimization (4x dot products per call) to amortize smstart overhead.
+				// SIMD acceleration for float32 on ARM64 using NEON Group4.
+				// Benchmarks show NEON Group4 outperforms SME Group4 at all sizes
+				// because SME's smstart/smstop overhead (~100+ cycles) is too high,
+				// even though SME has wider vectors (512-bit vs 128-bit).
 				// For other types or platforms, fall back to pure Go.
 				if lhsFloat32, ok := any(lhsFlat).([]float32); ok {
-					if hasSME && blockDim >= 512 {
-						// SME path for large vectors (Apple M4+ only)
-						rhsFloat32 := any(rhsFlat).([]float32)
-						outputFloat32 := any(outputFlat).([]float32)
-
-						s0, s1, s2, s3 := dotProductInnerLoopSME(
-							lhsFloat32, rhsFloat32, outputFloat32,
-							lhsIdx, rhsIdx, outputIdx, blockDim)
-
-						sum0 = T(s0)
-						sum1 = T(s1)
-						sum2 = T(s2)
-						sum3 = T(s3)
-						rhsIdx += blockDim // Compensate for skipping scalar loop
-						goto done
-					} else if hasNEON && blockDim >= 64 {
-						// NEON path (all ARM64, and M4+ for vectors < 512)
+					if hasNEON && blockDim >= 64 {
+						// NEON Group4 path - fastest for all ARM64 including Apple M4
 						rhsFloat32 := any(rhsFlat).([]float32)
 						outputFloat32 := any(outputFlat).([]float32)
 
