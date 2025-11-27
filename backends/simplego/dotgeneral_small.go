@@ -162,14 +162,38 @@ func execDotGeneralSmall(backend *Backend, lhs, rhs *Buffer, params *dotGeneralN
 	}
 
 	tmpOutput := output
-	castToFloat32 := dtype == dtypes.BFloat16 || dtype == dtypes.Float16
-	if castToFloat32 {
-		outputShape := shapes.Make(dtypes.Float32, params.batchSize, params.lhsCrossSize, params.rhsCrossSize)
-		tmpOutput = backend.getBufferForShape(outputShape)
+	outputDType := output.shape.DType
+	needsTempOutput := dtype != outputDType
+	if needsTempOutput {
+		// Create temporary output with intermediate dtype (float32 for fp16, int32 for int8)
+		tmpOutput = backend.getBufferForShape(output.shape)
 		tmpOutput.Zeros()
 	}
 
-	normalizeDotGeneral := dotGeneralNormalizedDTypeMap.Get(dtype).(func(lhs, rhs, output *Buffer, params *dotGeneralNodeData, batchStartIdx, batchEndIdx int))
+	// Select kernel based on input dtype and output dtype
+	var normalizeDotGeneral func(lhs, rhs, output *Buffer, params *dotGeneralNodeData, batchStartIdx, batchEndIdx int)
+
+	lhsDType := lhs.shape.DType
+	rhsDType := rhs.shape.DType
+
+	// Use specialized int8→int32 kernels if available
+	isQuantizedOp := (lhsDType == dtypes.Int8 || lhsDType == dtypes.Uint8) &&
+		(rhsDType == dtypes.Int8 || rhsDType == dtypes.Uint8) &&
+		outputDType == dtypes.Int32
+
+	if isQuantizedOp {
+		// For int8×int8, use signed kernel (SMMLA)
+		if lhsDType == dtypes.Int8 && rhsDType == dtypes.Int8 {
+			normalizeDotGeneral = execNormalizedDotGeneralInt8ToInt32
+		} else {
+			// For uint8×uint8 or mixed int8/uint8, use unsigned kernel (UMMLA)
+			// Mixed types are treated as unsigned to avoid sign extension issues
+			normalizeDotGeneral = execNormalizedDotGeneralUint8ToInt32
+		}
+	} else {
+		// Fallback to generic kernel
+		normalizeDotGeneral = dotGeneralNormalizedDTypeMap.Get(dtype).(func(lhs, rhs, output *Buffer, params *dotGeneralNodeData, batchStartIdx, batchEndIdx int))
+	}
 
 	// Decide on using parallelism across the batch -- each example is started on a separate worker.
 	useBatchParallelism := backend.workers.IsEnabled()
@@ -196,11 +220,18 @@ func execDotGeneralSmall(backend *Backend, lhs, rhs *Buffer, params *dotGeneralN
 		wg.Wait()
 	}
 
-	// If we created a temporary float32 output, convert it back to the original dtype.
-	if castToFloat32 {
-		convertFn := convertDTypePairMap.Get(dtypes.Float32, output.shape.DType).(convertFnType)
-		convertFn(tmpOutput, output)
-		backend.putBuffer(tmpOutput) // Return the temporary buffer to the pool.
+	// If we created a temporary output with different dtype, handle conversion or copy
+	if needsTempOutput {
+		if dtype == dtypes.BFloat16 || dtype == dtypes.Float16 {
+			// For float16→float32, convert back to float16
+			convertFn := convertDTypePairMap.Get(tmpOutput.shape.DType, output.shape.DType).(convertFnType)
+			convertFn(tmpOutput, output)
+			backend.putBuffer(tmpOutput)
+		} else if isQuantizedOp {
+			// For int8→int32, tmpOutput already has the correct int32 values, just copy
+			copy(output.flat.([]int32), tmpOutput.flat.([]int32))
+			backend.putBuffer(tmpOutput)
+		}
 	}
 	return nil
 }

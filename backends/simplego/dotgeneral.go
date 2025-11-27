@@ -63,9 +63,19 @@ func (b *Builder) DotGeneral(lhsOp backends.Op, lhsContractingAxes, lhsBatchAxes
 		return nil, err
 	}
 	lhs, rhs := inputs[0], inputs[1]
-	dtype := lhs.shape.DType
-	if dtype != rhs.shape.DType {
-		return nil, errors.Errorf("DotGeneral lhs (left-hand-side) and rhs operands don't match data types: %s and %s", dtype, rhs.shape.DType)
+	lhsDType := lhs.shape.DType
+	rhsDType := rhs.shape.DType
+
+	if lhsDType != rhsDType {
+		return nil, errors.Errorf("DotGeneral lhs (left-hand-side) and rhs operands don't match data types: %s and %s", lhsDType, rhsDType)
+	}
+
+	dtype := lhsDType
+
+	// Determine output dtype: for int8/uint8 inputs, use int32 accumulation
+	outputDType := dtype
+	if dtype == dtypes.Int8 || dtype == dtypes.Uint8 {
+		outputDType = dtypes.Int32
 	}
 	if len(lhsContractingAxes) != len(rhsContractingAxes) {
 		return nil, errors.Errorf("DotGeneral number of contracting axes for lhs (%d) doesn't match rhs (%d)",
@@ -146,7 +156,7 @@ func (b *Builder) DotGeneral(lhsOp backends.Op, lhsContractingAxes, lhsBatchAxes
 	blockLog2Dim := DotGeneralTargetBlockLog2Dim[dtype]
 	params.lhsBlockedShape = dgCreateBlockedShape(dtype, params.batchSize, params.lhsCrossSize, params.contractingSize, blockLog2Dim)
 	params.rhsBlockedShape = dgCreateBlockedShape(dtype, params.batchSize, params.rhsCrossSize, params.contractingSize, blockLog2Dim)
-	outputDType := dtype
+	// outputDType already set above based on input dtype
 	if dtype == dtypes.BFloat16 || dtype == dtypes.Float16 {
 		// For 16 bits, store the intermediary results as float32 to minimize numerical errors during accumulation.
 		// Notice the blockLog2Dim must be the same, because the block dimensions much match the inputs.
@@ -155,7 +165,8 @@ func (b *Builder) DotGeneral(lhsOp backends.Op, lhsContractingAxes, lhsBatchAxes
 	params.outputBlockedShape = dgCreateBlockedShape(outputDType, params.batchSize, params.lhsCrossSize, params.rhsCrossSize, blockLog2Dim)
 
 	// Create dot-general node: it will generate a normalized output [batchSize, lhsCrossSize, rhsCrossSize].
-	dotGeneral := b.newNode(backends.OpTypeDotGeneral, shapes.Make(dtype, params.batchSize, params.lhsCrossSize, params.rhsCrossSize), lhs, rhs)
+	// Use outputDType for output shape to support int8×int8→int32
+	dotGeneral := b.newNode(backends.OpTypeDotGeneral, shapes.Make(outputDType, params.batchSize, params.lhsCrossSize, params.rhsCrossSize), lhs, rhs)
 	dotGeneral.data = &params
 
 	// Reshape result to recover batch and cross dimensions.
@@ -213,6 +224,24 @@ const (
 	largeProblemSize
 	checkProblemSize
 )
+
+// convertUint8ToInt8 converts a uint8 buffer to int8 by copying data with reinterpretation
+func (b *Backend) convertUint8ToInt8(buf *Buffer) *Buffer {
+	if buf.shape.DType != dtypes.Uint8 {
+		return buf
+	}
+
+	uint8Flat := buf.flat.([]uint8)
+	newBuf := b.getBufferForShape(shapes.Make(dtypes.Int8, buf.shape.Dimensions...))
+	int8Flat := newBuf.flat.([]int8)
+
+	// Copy with reinterpretation: uint8 → int8
+	for i, v := range uint8Flat {
+		int8Flat[i] = int8(v)
+	}
+
+	return newBuf
+}
 
 // execDotGeneral executes the DotGeneral by first normalizing and repackaging the tensors into blocks.
 func execDotGeneral(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*Buffer, error) {

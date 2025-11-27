@@ -404,7 +404,9 @@ func execDotGeneralLarge(backend *Backend, lhs, rhs *Buffer, params *dotGeneralN
 	backend.putBuffer(rhsBlocks)
 
 	// Copy over outputBlocks to the normal output.
-	copyOutputFn := dotGeneralOutputBlockToFlatDTypeMap.Get(dtype).(func(blockedSource, output *Buffer))
+	// Use the output dtype (not input dtype) to get the correct copy function
+	outputDType := output.shape.DType
+	copyOutputFn := dotGeneralOutputBlockToFlatDTypeMap.Get(outputDType).(func(blockedSource, output *Buffer))
 	copyOutputFn(outputBlocks, output)
 	backend.putBuffer(outputBlocks)
 	return nil
