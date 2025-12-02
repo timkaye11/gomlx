@@ -29,8 +29,9 @@ fp16_vectorloop:
 	WORD $0xf9800420       // prfm pldl1keep, [x1, #128]
 
 	// Load 8 FP16 values from each array (128 bits = 8 x FP16)
-	WORD $0x4c407804       // ld1 {v4.8h}, [x0], #16
-	WORD $0x4c407828       // ld1 {v8.8h}, [x1], #16
+	// Encoding: 0x4cdf = post-index immediate (bit 23=1, Rm=11111)
+	WORD $0x4cdf7804       // ld1 {v4.8h}, [x0], #16
+	WORD $0x4cdf7828       // ld1 {v8.8h}, [x1], #16
 
 	// FMLAL: Floating-point fused multiply-add long (lower)
 	// v0.4s += v4.4h[0:3] * v8.4h[0:3] (lower 4 FP16 elements → 4 FP32)
@@ -105,14 +106,14 @@ g4fp16_vectorloop:
 	WORD $0xf98004a0       // prfm pldl1keep, [x5, #128]
 	WORD $0xf98004c0       // prfm pldl1keep, [x6, #128]
 
-	// Load LHS (shared) - 8 FP16 values
-	WORD $0x4c407804       // ld1 {v4.8h}, [x0], #16
+	// Load LHS (shared) - 8 FP16 values (post-index by 16 bytes)
+	WORD $0x4cdf7804       // ld1 {v4.8h}, [x0], #16
 
-	// Load RHS vectors - 8 FP16 values each
-	WORD $0x4c407825       // ld1 {v5.8h}, [x1], #16  (b0)
-	WORD $0x4c407886       // ld1 {v6.8h}, [x4], #16  (b1)
-	WORD $0x4c4078a7       // ld1 {v7.8h}, [x5], #16  (b2)
-	WORD $0x4c4078c8       // ld1 {v8.8h}, [x6], #16  (b3)
+	// Load RHS vectors - 8 FP16 values each (post-index by 16 bytes)
+	WORD $0x4cdf7825       // ld1 {v5.8h}, [x1], #16  (b0)
+	WORD $0x4cdf7886       // ld1 {v6.8h}, [x4], #16  (b1)
+	WORD $0x4cdf78a7       // ld1 {v7.8h}, [x5], #16  (b2)
+	WORD $0x4cdf78c8       // ld1 {v8.8h}, [x6], #16  (b3)
 
 	// FMLAL for lower 4 elements of each pair
 	WORD $0x4e25ec80       // fmlal v0.4s, v4.4h, v5.4h
@@ -195,15 +196,16 @@ bf16_vectorloop:
 	WORD $0xf9800400       // prfm pldl1keep, [x0, #128]
 	WORD $0xf9800420       // prfm pldl1keep, [x1, #128]
 
-	// Load 8 BF16 values from each array
-	WORD $0x4c407804       // ld1 {v4.8h}, [x0], #16
-	WORD $0x4c407828       // ld1 {v8.8h}, [x1], #16
+	// Load 8 BF16 values from each array (post-index by 16 bytes)
+	// Encoding: 0x4cdf = post-index immediate (bit 23=1, Rm=11111)
+	WORD $0x4cdf7804       // ld1 {v4.8h}, [x0], #16
+	WORD $0x4cdf7828       // ld1 {v8.8h}, [x1], #16
 
-	// BFMLALB: BFloat16 fused multiply-add long (bottom/lower elements)
+	// BFMLALB: BFloat16 fused multiply-add long
+	// On Apple Silicon, BFMLALB computes BOTH a[2i]*b[2i] AND a[2i+1]*b[2i+1]
+	// for each lane, giving the full dot product of each element pair.
+	// We do NOT use BFMLALT because that would double-count the odd elements.
 	WORD $0x6e48fc80       // bfmlalb v0.4s, v4.8h, v8.8h
-
-	// BFMLALT: BFloat16 fused multiply-add long (top/upper elements)
-	WORD $0x6ec8fc80       // bfmlalt v0.4s, v4.8h, v8.8h
 
 	SUBS $1, R3, R3
 	BNE bf16_vectorloop
@@ -239,4 +241,88 @@ bf16_scalarloop:
 
 bf16_done:
 	FMOVS F0, ret+24(FP)
+	RET
+
+// func dotProductBF16_debug_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32)
+// Debug version that returns the 4 accumulator lanes before horizontal reduction
+TEXT ·dotProductBF16_debug_asm(SB), NOSPLIT, $0-48
+	MOVD a+0(FP), R0       // R0 = a pointer (BF16 array)
+	MOVD b+8(FP), R1       // R1 = b pointer (BF16 array)
+	MOVD n+16(FP), R2      // R2 = n (count of BF16 elements)
+
+	// Initialize FP32 accumulator to zero
+	WORD $0x4f000400       // movi v0.4s, #0
+
+	// Process 8 BF16 elements at a time
+	LSR $3, R2, R3         // R3 = n / 8
+	AND $7, R2, R4         // R4 = n % 8
+
+	CBZ R3, bf16_debug_done
+
+bf16_debug_vectorloop:
+	// Load 8 BF16 values from each array (post-index by 16 bytes)
+	WORD $0x4cdf7804       // ld1 {v4.8h}, [x0], #16 (post-index)
+	WORD $0x4cdf7828       // ld1 {v8.8h}, [x1], #16 (post-index)
+
+	// BFMLALB: BFloat16 fused multiply-add long (bottom/lower elements)
+	WORD $0x6e48fc80       // bfmlalb v0.4s, v4.8h, v8.8h
+
+	// BFMLALT: BFloat16 fused multiply-add long (top/upper elements)
+	WORD $0x6ec8fc80       // bfmlalt v0.4s, v4.8h, v8.8h
+
+	SUBS $1, R3, R3
+	BNE bf16_debug_vectorloop
+
+bf16_debug_done:
+	// Store v0.4s to the return slots on the stack
+	// Calculate address of ret0 on stack
+	MOVD $ret0+24(FP), R5
+	// Store all 4 float32 lanes to consecutive memory locations
+	WORD $0x4c007ca0       // st1 {v0.4s}, [x5]
+	RET
+
+// func dotProductBFMLALB_only_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32)
+// Test version that ONLY runs BFMLALB to isolate its behavior
+TEXT ·dotProductBFMLALB_only_asm(SB), NOSPLIT, $0-48
+	MOVD a+0(FP), R0
+	MOVD b+8(FP), R1
+	MOVD n+16(FP), R2
+
+	WORD $0x4f000400       // movi v0.4s, #0
+	LSR $3, R2, R3
+	CBZ R3, bfmlalb_done
+
+bfmlalb_loop:
+	WORD $0x4cdf7804       // ld1 {v4.8h}, [x0], #16 (post-index)
+	WORD $0x4cdf7828       // ld1 {v8.8h}, [x1], #16 (post-index)
+	WORD $0x6e48fc80       // bfmlalb v0.4s, v4.8h, v8.8h ONLY
+	SUBS $1, R3, R3
+	BNE bfmlalb_loop
+
+bfmlalb_done:
+	MOVD $ret0+24(FP), R5
+	WORD $0x4c007ca0       // st1 {v0.4s}, [x5]
+	RET
+
+// func dotProductBFMLALT_only_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32)
+// Test version that ONLY runs BFMLALT to isolate its behavior
+TEXT ·dotProductBFMLALT_only_asm(SB), NOSPLIT, $0-48
+	MOVD a+0(FP), R0
+	MOVD b+8(FP), R1
+	MOVD n+16(FP), R2
+
+	WORD $0x4f000400       // movi v0.4s, #0
+	LSR $3, R2, R3
+	CBZ R3, bfmlalt_done
+
+bfmlalt_loop:
+	WORD $0x4cdf7804       // ld1 {v4.8h}, [x0], #16 (post-index)
+	WORD $0x4cdf7828       // ld1 {v8.8h}, [x1], #16 (post-index)
+	WORD $0x6ec8fc80       // bfmlalt v0.4s, v4.8h, v8.8h ONLY
+	SUBS $1, R3, R3
+	BNE bfmlalt_loop
+
+bfmlalt_done:
+	MOVD $ret0+24(FP), R5
+	WORD $0x4c007ca0       // st1 {v0.4s}, [x5]
 	RET
