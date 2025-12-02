@@ -172,3 +172,13 @@ func init() {
 	dotGeneralNormalizedDTypeMap.RegisterIfNotSet(dtypes.Float16, execNormalizedDotGeneralFloat16ToFloat32)
 	dotGeneralKernelDTypeMap.RegisterIfNotSet(dtypes.Float16, buildDotGeneralKernelFloat16ToFloat32)
 }
+
+// dotProductBF16InnerLoop is the scalar fallback for BF16 dot product.
+// This is used by the BFloat16 kernel in dotgeneral_large.go on non-NEON platforms.
+func dotProductBF16InnerLoop(lhsFlat, rhsFlat []bfloat16.BFloat16, lhsIdx, rhsIdx, size int) float32 {
+	var sum float32
+	for i := 0; i < size; i++ {
+		sum += lhsFlat[lhsIdx+i].Float32() * rhsFlat[rhsIdx+i].Float32()
+	}
+	return sum
+}

@@ -153,8 +153,9 @@ func execDotGeneralWithPreBlockedRHS(backend *Backend, lhs *Buffer, rhsPreBlocke
 	copyFlatToBlock(lhs, lhsBlocks, params.lhsContractingAxes, params.lhsBatchAxes, params.batchSize, params.lhsCrossSize, params.contractingSize, blkLog2Dim)
 
 	// Get output blocked buffer
-	outputDType := output.shape.DType
-	outputBlocks := backend.getBuffer(outputDType, params.outputBlockedShape.Size())
+	// Use params.outputBlockedShape.DType which is the accumulator type (Float32 for FP16/BF16, Int32 for Int8/Uint8)
+	accumulatorDType := params.outputBlockedShape.DType
+	outputBlocks := backend.getBuffer(accumulatorDType, params.outputBlockedShape.Size())
 	outputBlocks.shape = params.outputBlockedShape
 	outputBlocks.Zeros()
 
@@ -218,7 +219,9 @@ func execDotGeneralWithPreBlockedRHS(backend *Backend, lhs *Buffer, rhsPreBlocke
 	backend.putBuffer(lhsBlocks)
 
 	// Copy output from blocked to flat format
-	copyOutputBlockToFlat := dotGeneralOutputBlockToFlatDTypeMap.Get(outputDType).(func(blockedSource, output *Buffer))
+	// Use final output dtype (e.g., Float16) to get correct conversion function
+	finalOutputDType := output.shape.DType
+	copyOutputBlockToFlat := dotGeneralOutputBlockToFlatDTypeMap.Get(finalOutputDType).(func(blockedSource, output *Buffer))
 	copyOutputBlockToFlat(outputBlocks, output)
 	backend.putBuffer(outputBlocks)
 
@@ -285,12 +288,14 @@ func canUsePreBlockedPath(lhs, rhs *Buffer, params *dotGeneralNodeData) bool {
 	}
 
 	// Check dtype is supported
-	// Note: Float16 and BFloat16 accumulate to Float32 internally but need conversion back,
-	// which is handled by the standard path. Similarly, Int8/Uint8 accumulate to Int32.
-	// Only support dtypes where input dtype == output dtype for now.
+	// Float16 and BFloat16 accumulate to Float32 internally and convert back via
+	// dgCopyOutputBlockToFlatFloat16/dgCopyOutputBlockToFlatBFloat16.
+	// Int8/Uint8 accumulate to Int32 (output dtype is Int32, not converted back).
 	dtype := lhs.shape.DType
 	switch dtype {
 	case dtypes.Float32, dtypes.Float64,
+		dtypes.Float16, dtypes.BFloat16,
+		dtypes.Int8, dtypes.Uint8,
 		dtypes.Int16, dtypes.Int32, dtypes.Int64,
 		dtypes.Uint16, dtypes.Uint32, dtypes.Uint64:
 		return true

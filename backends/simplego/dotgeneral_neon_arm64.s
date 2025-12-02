@@ -22,6 +22,10 @@ TEXT ·dotProduct_neon_asm(SB), NOSPLIT, $0-28
 	CBZ R3, scalarloop     // skip vector loop if < 4 elements
 
 vectorloop:
+	// Prefetch next cache line (64 bytes ahead = 4 iterations)
+	WORD $0xf9800400       // prfm pldl1keep, [x0, #128]
+	WORD $0xf9800420       // prfm pldl1keep, [x1, #128]
+
 	// Load 4 floats from each array
 	WORD $0x4cdf7804       // ld1 {v4.4s}, [x0], #16
 	WORD $0x4cdf7828       // ld1 {v8.4s}, [x1], #16
@@ -82,6 +86,13 @@ TEXT ·dotProductGroup4_neon_asm(SB), NOSPLIT, $0-48
 	CBZ R7, g4_scalarloop
 
 g4_vectorloop:
+	// Prefetch next cache lines for all 5 arrays (128 bytes ahead)
+	WORD $0xf9800400       // prfm pldl1keep, [x0, #128]
+	WORD $0xf9800420       // prfm pldl1keep, [x1, #128]
+	WORD $0xf9800480       // prfm pldl1keep, [x4, #128]
+	WORD $0xf98004a0       // prfm pldl1keep, [x5, #128]
+	WORD $0xf98004c0       // prfm pldl1keep, [x6, #128]
+
 	// Load LHS (shared)
 	WORD $0x4cdf7804       // ld1 {v4.4s}, [x0], #16
 

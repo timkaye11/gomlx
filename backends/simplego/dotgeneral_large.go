@@ -3,6 +3,7 @@ package simplego
 import (
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/gopjrt/dtypes/bfloat16"
+	"github.com/x448/float16"
 
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/support/xsync"
@@ -261,6 +262,7 @@ func dgCopyOutputBlockToFlat[T interface {
 
 func init() {
 	dotGeneralOutputBlockToFlatDTypeMap.Register(dtypes.BFloat16, dgCopyOutputBlockToFlatBFloat16)
+	dotGeneralOutputBlockToFlatDTypeMap.Register(dtypes.Float16, dgCopyOutputBlockToFlatFloat16)
 }
 
 // dgCopyOutputBlockToFlatBFloat16 copies the blocked output to a flat output, removing the padding.
@@ -314,6 +316,65 @@ func dgCopyOutputBlockToFlatBFloat16(blockSource, output *Buffer) {
 					outputRowOffset := outputBlockOffset + blockRow*outputLhsStride
 					for blockCol := range rhsEnd - rhsStart {
 						outputData[outputRowOffset+blockCol] = bfloat16.FromFloat32(sourceData[sourceRowOffset+blockCol])
+					}
+				}
+			}
+		}
+	}
+}
+
+// dgCopyOutputBlockToFlatFloat16 copies the blocked output to a flat output, removing the padding.
+// The blockSource is assumed to be float32 -- matrix multiplication uses float32 to avoid
+// numeric errors when accumulating results.
+//
+// blockedSource shape: float32[batchSize, lhsCrossBlocks, rhsCrossBlocks, blockDim, blockDim]
+// output shape: float16[batchSize, lhsCrossSize, rhsCrossSize]
+func dgCopyOutputBlockToFlatFloat16(blockSource, output *Buffer) {
+	sourceDims := blockSource.shape.Dimensions
+	outputDims := output.shape.Dimensions
+
+	batchSize := sourceDims[0]
+	lhsBlockCross := sourceDims[1]
+	rhsBlockCross := sourceDims[2]
+	blockDim := sourceDims[3] // Same as sourceDims[4]
+	lhsCrossSize := outputDims[1]
+	rhsCrossSize := outputDims[2]
+
+	// Pre-calculate strides
+	outputRhsStride := 1
+	outputLhsStride := rhsCrossSize
+	outputBatchStride := lhsCrossSize * rhsCrossSize
+
+	sourceBlockSize := blockDim * blockDim
+	sourceRhsBlockStride := sourceBlockSize
+	sourceLhsBlockStride := rhsBlockCross * sourceBlockSize
+	sourceBatchStride := lhsBlockCross * rhsBlockCross * sourceBlockSize
+
+	sourceData := blockSource.flat.([]float32)
+	outputData := output.flat.([]float16.Float16)
+
+	for batch := 0; batch < batchSize; batch++ {
+		sourceBatchOffset := batch * sourceBatchStride
+		outputBatchOffset := batch * outputBatchStride
+
+		for lhsBlock := 0; lhsBlock < lhsBlockCross && lhsBlock*blockDim < lhsCrossSize; lhsBlock++ {
+			lhsStart := lhsBlock * blockDim
+			lhsEnd := min(lhsStart+blockDim, lhsCrossSize)
+			sourceLhsOffset := sourceBatchOffset + lhsBlock*sourceLhsBlockStride
+			outputLhsOffset := outputBatchOffset + lhsStart*outputLhsStride
+
+			for rhsBlock := 0; rhsBlock < rhsBlockCross && rhsBlock*blockDim < rhsCrossSize; rhsBlock++ {
+				rhsStart := rhsBlock * blockDim
+				rhsEnd := min(rhsStart+blockDim, rhsCrossSize)
+				sourceBlockOffset := sourceLhsOffset + rhsBlock*sourceRhsBlockStride
+				outputBlockOffset := outputLhsOffset + rhsStart*outputRhsStride
+
+				// Copy valid elements from the block
+				for blockRow := 0; blockRow < lhsEnd-lhsStart; blockRow++ {
+					sourceRowOffset := sourceBlockOffset + blockRow*blockDim
+					outputRowOffset := outputBlockOffset + blockRow*outputLhsStride
+					for blockCol := range rhsEnd - rhsStart {
+						outputData[outputRowOffset+blockCol] = float16.Fromfloat32(sourceData[sourceRowOffset+blockCol])
 					}
 				}
 			}
@@ -659,6 +720,25 @@ func buildDotGeneralKernelBFloat16(lhs, rhs, output *Buffer, blockDim int) kerne
 			// Loop 4 rows at a time.
 			for rhsRow := 0; rhsRow < blockDim; rhsRow += 4 { // range blockDim { // loop over rhs rows:
 				lhsIdx := baseLhsIdx
+
+				// Try NEON BF16 path using BFMLAL instructions (ARMv8.6+)
+				// This avoids explicit BF16→FP32 conversion by using native instructions
+				if hasBF16NEON && blockDim >= 16 {
+					sum0 := outputFlat[outputIdx] + dotProductBF16InnerLoop(lhsFlat, rhsFlat, lhsIdx, rhsIdx, blockDim)
+					sum1 := outputFlat[outputIdx+1] + dotProductBF16InnerLoop(lhsFlat, rhsFlat, lhsIdx, rhsIdx+blockDim, blockDim)
+					sum2 := outputFlat[outputIdx+2] + dotProductBF16InnerLoop(lhsFlat, rhsFlat, lhsIdx, rhsIdx+2*blockDim, blockDim)
+					sum3 := outputFlat[outputIdx+3] + dotProductBF16InnerLoop(lhsFlat, rhsFlat, lhsIdx, rhsIdx+3*blockDim, blockDim)
+
+					outputFlat[outputIdx] = sum0
+					outputFlat[outputIdx+1] = sum1
+					outputFlat[outputIdx+2] = sum2
+					outputFlat[outputIdx+3] = sum3
+					outputIdx += 4
+					rhsIdx += 4 * blockDim
+					continue
+				}
+
+				// Scalar fallback
 				contractingIdx := 0
 				sum0 := outputFlat[outputIdx]
 				sum1 := outputFlat[outputIdx+1]

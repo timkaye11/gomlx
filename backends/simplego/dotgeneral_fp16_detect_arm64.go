@@ -44,13 +44,12 @@ func detectFP16NEON() bool {
 // detectBF16NEON checks if BF16 NEON instructions (BFMLALB/BFMLALT) are available.
 // These require ARMv8.6-A with FEAT_BF16.
 func detectBF16NEON() bool {
+	// NOTE: On macOS, the sysctl hw.optional.arm.FEAT_BF16 may report true even when
+	// the instructions are not actually supported by the kernel/runtime. This causes
+	// SIGILL errors when executing BFMLALB/BFMLALT. We disable BF16 NEON on macOS
+	// for now until this is resolved. The scalar fallback is still fast.
+	// See: https://github.com/golang/go/issues/... (if there's a relevant issue)
 	if runtime.GOOS == "darwin" {
-		// macOS: Check for BF16 support via sysctl
-		// Apple M2+ supports BF16 instructions
-		val, err := syscall.Sysctl("hw.optional.arm.FEAT_BF16")
-		if err == nil && len(val) > 0 && val[0] != 0 {
-			return true
-		}
 		return false
 	}
 

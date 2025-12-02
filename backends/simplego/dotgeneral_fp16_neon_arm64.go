@@ -237,3 +237,12 @@ func init() {
 	// Register kernel builders for large matrix path
 	dotGeneralKernelDTypeMap.RegisterIfNotSet(dtypes.Float16, buildDotGeneralKernelFloat16ToFloat32)
 }
+
+// dotProductBF16InnerLoop computes the dot product of lhs[lhsIdx:lhsIdx+size] and rhs[rhsIdx:rhsIdx+size]
+// using NEON BFMLAL instructions when available.
+// This is used by the BFloat16 kernel in dotgeneral_large.go.
+func dotProductBF16InnerLoop(lhsFlat, rhsFlat []bfloat16.BFloat16, lhsIdx, rhsIdx, size int) float32 {
+	lhsPtr := unsafe.Pointer(&lhsFlat[lhsIdx])
+	rhsPtr := unsafe.Pointer(&rhsFlat[rhsIdx])
+	return dotProductBF16_neon_asm(lhsPtr, rhsPtr, int64(size))
+}

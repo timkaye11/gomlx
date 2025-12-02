@@ -26,6 +26,10 @@ TEXT ·dotProductInt8_neon_asm(SB), NOSPLIT, $0-28
 	CBZ R3, scalarloop_init // Skip SDOT loop if < 16 elements, need to init R3
 
 sdotloop:
+	// Prefetch next cache line
+	WORD $0xf9800400       // prfm pldl1keep, [x0, #128]
+	WORD $0xf9800420       // prfm pldl1keep, [x1, #128]
+
 	// Load 16x int8 from each array (into 128-bit vectors)
 	WORD $0x4cdf7004       // ld1 {v4.16b}, [x0], #16
 	WORD $0x4cdf7028       // ld1 {v8.16b}, [x1], #16
@@ -89,6 +93,10 @@ TEXT ·dotProductUint8_neon_asm(SB), NOSPLIT, $0-28
 	CBZ R3, uscalarloop_init // Skip UDOT loop if < 16 elements, need to init R3
 
 udotloop:
+	// Prefetch next cache line
+	WORD $0xf9800400       // prfm pldl1keep, [x0, #128]
+	WORD $0xf9800420       // prfm pldl1keep, [x1, #128]
+
 	// Load 16x uint8
 	WORD $0x4cdf7004       // ld1 {v4.16b}, [x0], #16
 	WORD $0x4cdf7028       // ld1 {v8.16b}, [x1], #16

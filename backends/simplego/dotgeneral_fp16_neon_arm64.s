@@ -24,6 +24,10 @@ TEXT ·dotProductFP16_neon_asm(SB), NOSPLIT, $0-28
 	CBZ R3, fp16_scalarloop // skip vector loop if < 8 elements
 
 fp16_vectorloop:
+	// Prefetch next cache line (64 bytes ahead)
+	WORD $0xf9800400       // prfm pldl1keep, [x0, #128]
+	WORD $0xf9800420       // prfm pldl1keep, [x1, #128]
+
 	// Load 8 FP16 values from each array (128 bits = 8 x FP16)
 	WORD $0x4c407804       // ld1 {v4.8h}, [x0], #16
 	WORD $0x4c407828       // ld1 {v8.8h}, [x1], #16
@@ -94,6 +98,13 @@ TEXT ·dotProductFP16Group4_neon_asm(SB), NOSPLIT, $0-48
 	CBZ R7, g4fp16_scalarloop
 
 g4fp16_vectorloop:
+	// Prefetch next cache lines for all 5 arrays
+	WORD $0xf9800400       // prfm pldl1keep, [x0, #128]
+	WORD $0xf9800420       // prfm pldl1keep, [x1, #128]
+	WORD $0xf9800480       // prfm pldl1keep, [x4, #128]
+	WORD $0xf98004a0       // prfm pldl1keep, [x5, #128]
+	WORD $0xf98004c0       // prfm pldl1keep, [x6, #128]
+
 	// Load LHS (shared) - 8 FP16 values
 	WORD $0x4c407804       // ld1 {v4.8h}, [x0], #16
 
@@ -180,6 +191,10 @@ TEXT ·dotProductBF16_neon_asm(SB), NOSPLIT, $0-28
 	CBZ R3, bf16_scalarloop
 
 bf16_vectorloop:
+	// Prefetch next cache line
+	WORD $0xf9800400       // prfm pldl1keep, [x0, #128]
+	WORD $0xf9800420       // prfm pldl1keep, [x1, #128]
+
 	// Load 8 BF16 values from each array
 	WORD $0x4c407804       // ld1 {v4.8h}, [x0], #16
 	WORD $0x4c407828       // ld1 {v8.8h}, [x1], #16
