@@ -1,4 +1,4 @@
-//go:build !noasm && arm64
+//go:build !noasm && arm64 && !darwin
 
 // NEON-accelerated FP16 dot product for ARM64
 // Uses FMLAL/FMLAL2 instructions for efficient FP16×FP16→FP32 accumulation
