@@ -8,7 +8,9 @@ import (
 	"unsafe"
 
 	"github.com/gomlx/gopjrt/dtypes"
+	"github.com/gomlx/gopjrt/dtypes/bfloat16"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/x448/float16"
 )
 
 // Benchmark tests for DotGeneral optimizations
@@ -268,8 +270,186 @@ func BenchmarkFP16Operations(b *testing.B) {
 		b.Skip("FP16 NEON not available")
 	}
 
-	// This would require float16 package to be available
-	b.Skip("FP16 benchmark requires float16 test data setup")
+	backendIface, _ := New("")
+	defer backendIface.Finalize()
+	backend := backendIface.(*Backend)
+
+	sizes := []struct {
+		M, K, N int
+	}{
+		{64, 64, 64},
+		{128, 128, 128},
+		{256, 256, 256},
+		{512, 512, 512},
+	}
+
+	for _, size := range sizes {
+		M, K, N := size.M, size.K, size.N
+		b.Run(fmt.Sprintf("%dx%dx%d", M, K, N), func(b *testing.B) {
+			lhsShape := shapes.Make(dtypes.Float16, M, K)
+			rhsShape := shapes.Make(dtypes.Float16, K, N)
+			outputShape := shapes.Make(dtypes.Float16, M, N)
+
+			lhs := backend.NewBuffer(lhsShape)
+			rhs := backend.NewBuffer(rhsShape)
+			output := backend.NewBuffer(outputShape)
+
+			// Fill with test data
+			lhsFlat := lhs.flat.([]float16.Float16)
+			rhsFlat := rhs.flat.([]float16.Float16)
+			for i := range lhsFlat {
+				lhsFlat[i] = float16.Fromfloat32(float32(i%100) / 100.0)
+			}
+			for i := range rhsFlat {
+				rhsFlat[i] = float16.Fromfloat32(float32(i%100) / 100.0)
+			}
+
+			params := &dotGeneralNodeData{
+				lhsContractingAxes: []int{1},
+				rhsContractingAxes: []int{0},
+				lhsBatchAxes:       []int{},
+				rhsBatchAxes:       []int{},
+				batchSize:          1,
+				lhsCrossSize:       M,
+				rhsCrossSize:       N,
+				contractingSize:    K,
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				output.Zeros()
+				_ = execDotGeneralSmall(backend, lhs, rhs, params, output)
+			}
+
+			flops := 2 * int64(M) * int64(K) * int64(N)
+			gflops := float64(flops) * float64(b.N) / b.Elapsed().Seconds() / 1e9
+			b.ReportMetric(gflops, "GFLOPS")
+		})
+	}
+}
+
+// BenchmarkBF16Operations benchmarks BF16 dot product performance
+func BenchmarkBF16Operations(b *testing.B) {
+	if !hasBF16NEON {
+		b.Skip("BF16 NEON not available")
+	}
+
+	backendIface, _ := New("")
+	defer backendIface.Finalize()
+	backend := backendIface.(*Backend)
+
+	sizes := []struct {
+		M, K, N int
+	}{
+		{64, 64, 64},
+		{128, 128, 128},
+		{256, 256, 256},
+		{512, 512, 512},
+	}
+
+	for _, size := range sizes {
+		M, K, N := size.M, size.K, size.N
+		b.Run(fmt.Sprintf("%dx%dx%d", M, K, N), func(b *testing.B) {
+			lhsShape := shapes.Make(dtypes.BFloat16, M, K)
+			rhsShape := shapes.Make(dtypes.BFloat16, K, N)
+			outputShape := shapes.Make(dtypes.BFloat16, M, N)
+
+			lhs := backend.NewBuffer(lhsShape)
+			rhs := backend.NewBuffer(rhsShape)
+			output := backend.NewBuffer(outputShape)
+
+			// Fill with test data
+			lhsFlat := lhs.flat.([]bfloat16.BFloat16)
+			rhsFlat := rhs.flat.([]bfloat16.BFloat16)
+			for i := range lhsFlat {
+				lhsFlat[i] = bfloat16.FromFloat32(float32(i%100) / 100.0)
+			}
+			for i := range rhsFlat {
+				rhsFlat[i] = bfloat16.FromFloat32(float32(i%100) / 100.0)
+			}
+
+			params := &dotGeneralNodeData{
+				lhsContractingAxes: []int{1},
+				rhsContractingAxes: []int{0},
+				lhsBatchAxes:       []int{},
+				rhsBatchAxes:       []int{},
+				batchSize:          1,
+				lhsCrossSize:       M,
+				rhsCrossSize:       N,
+				contractingSize:    K,
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				output.Zeros()
+				_ = execDotGeneralSmall(backend, lhs, rhs, params, output)
+			}
+
+			flops := 2 * int64(M) * int64(K) * int64(N)
+			gflops := float64(flops) * float64(b.N) / b.Elapsed().Seconds() / 1e9
+			b.ReportMetric(gflops, "GFLOPS")
+		})
+	}
+}
+
+// BenchmarkF32Operations benchmarks Float32 dot product for comparison with FP16/BF16
+func BenchmarkF32Operations(b *testing.B) {
+	backendIface, _ := New("")
+	defer backendIface.Finalize()
+	backend := backendIface.(*Backend)
+
+	sizes := []struct {
+		M, K, N int
+	}{
+		{64, 64, 64},
+		{128, 128, 128},
+		{256, 256, 256},
+		{512, 512, 512},
+	}
+
+	for _, size := range sizes {
+		M, K, N := size.M, size.K, size.N
+		b.Run(fmt.Sprintf("%dx%dx%d", M, K, N), func(b *testing.B) {
+			lhsShape := shapes.Make(dtypes.Float32, M, K)
+			rhsShape := shapes.Make(dtypes.Float32, K, N)
+			outputShape := shapes.Make(dtypes.Float32, M, N)
+
+			lhs := backend.NewBuffer(lhsShape)
+			rhs := backend.NewBuffer(rhsShape)
+			output := backend.NewBuffer(outputShape)
+
+			// Fill with test data
+			lhsFlat := lhs.flat.([]float32)
+			rhsFlat := rhs.flat.([]float32)
+			for i := range lhsFlat {
+				lhsFlat[i] = float32(i%100) / 100.0
+			}
+			for i := range rhsFlat {
+				rhsFlat[i] = float32(i%100) / 100.0
+			}
+
+			params := &dotGeneralNodeData{
+				lhsContractingAxes: []int{1},
+				rhsContractingAxes: []int{0},
+				lhsBatchAxes:       []int{},
+				rhsBatchAxes:       []int{},
+				batchSize:          1,
+				lhsCrossSize:       M,
+				rhsCrossSize:       N,
+				contractingSize:    K,
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				output.Zeros()
+				_ = execDotGeneralSmall(backend, lhs, rhs, params, output)
+			}
+
+			flops := 2 * int64(M) * int64(K) * int64(N)
+			gflops := float64(flops) * float64(b.N) / b.Elapsed().Seconds() / 1e9
+			b.ReportMetric(gflops, "GFLOPS")
+		})
+	}
 }
 
 // BenchmarkMemoryBandwidth estimates memory bandwidth utilization

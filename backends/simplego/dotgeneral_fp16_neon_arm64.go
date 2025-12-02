@@ -242,8 +242,14 @@ func buildDotGeneralKernelFloat16ToFloat32(lhs, rhs, output *Buffer, blockDim in
 }
 
 func init() {
-	// Register FP16 optimized kernels
+	// Register FP16 optimized kernels (uses NEON FMLAL/FMLAL2)
 	dotGeneralNormalizedDTypeMap.RegisterIfNotSet(dtypes.Float16, execNormalizedDotGeneralFloat16ToFloat32)
+
+	// Register BF16 optimized kernels (uses NEON BFMLALB)
+	// This overrides the scalar version in dotgeneral_small.go when NEON is available
+	if hasBF16NEON {
+		dotGeneralNormalizedDTypeMap.Register(dtypes.BFloat16, execNormalizedDotGeneralBFloat16ToFloat32)
+	}
 
 	// Register kernel builders for large matrix path
 	dotGeneralKernelDTypeMap.RegisterIfNotSet(dtypes.Float16, buildDotGeneralKernelFloat16ToFloat32)
