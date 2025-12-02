@@ -1,4 +1,4 @@
-//go:build !noasm && arm64 && !darwin
+//go:build !noasm && arm64
 
 // NEON-accelerated FP16 dot product for ARM64
 // Uses FMLAL/FMLAL2 instructions for efficient FP16×FP16→FP32 accumulation
@@ -34,11 +34,11 @@ fp16_vectorloop:
 
 	// FMLAL: Floating-point fused multiply-add long (lower)
 	// v0.4s += v4.4h[0:3] * v8.4h[0:3] (lower 4 FP16 elements → 4 FP32)
-	WORD $0x4e88ec80       // fmlal v0.4s, v4.4h, v8.4h
+	WORD $0x4e28ec80       // fmlal v0.4s, v4.4h, v8.4h
 
 	// FMLAL2: Floating-point fused multiply-add long (upper)
 	// v0.4s += v4.4h[4:7] * v8.4h[4:7] (upper 4 FP16 elements → 4 FP32)
-	WORD $0x4ec8ec80       // fmlal2 v0.4s, v4.4h, v8.4h
+	WORD $0x6e28cc80       // fmlal2 v0.4s, v4.4h, v8.4h
 
 	SUBS $1, R3, R3
 	BNE fp16_vectorloop
@@ -115,16 +115,16 @@ g4fp16_vectorloop:
 	WORD $0x4c4078c8       // ld1 {v8.8h}, [x6], #16  (b3)
 
 	// FMLAL for lower 4 elements of each pair
-	WORD $0x4e85ec80       // fmlal v0.4s, v4.4h, v5.4h
-	WORD $0x4e86ec81       // fmlal v1.4s, v4.4h, v6.4h
-	WORD $0x4e87ec82       // fmlal v2.4s, v4.4h, v7.4h
-	WORD $0x4e88ec83       // fmlal v3.4s, v4.4h, v8.4h
+	WORD $0x4e25ec80       // fmlal v0.4s, v4.4h, v5.4h
+	WORD $0x4e26ec81       // fmlal v1.4s, v4.4h, v6.4h
+	WORD $0x4e27ec82       // fmlal v2.4s, v4.4h, v7.4h
+	WORD $0x4e28ec83       // fmlal v3.4s, v4.4h, v8.4h
 
 	// FMLAL2 for upper 4 elements of each pair
-	WORD $0x4ec5ec80       // fmlal2 v0.4s, v4.4h, v5.4h
-	WORD $0x4ec6ec81       // fmlal2 v1.4s, v4.4h, v6.4h
-	WORD $0x4ec7ec82       // fmlal2 v2.4s, v4.4h, v7.4h
-	WORD $0x4ec8ec83       // fmlal2 v3.4s, v4.4h, v8.4h
+	WORD $0x6e25cc80       // fmlal2 v0.4s, v4.4h, v5.4h
+	WORD $0x6e26cc81       // fmlal2 v1.4s, v4.4h, v6.4h
+	WORD $0x6e27cc82       // fmlal2 v2.4s, v4.4h, v7.4h
+	WORD $0x6e28cc83       // fmlal2 v3.4s, v4.4h, v8.4h
 
 	SUBS $1, R7, R7
 	BNE g4fp16_vectorloop
@@ -203,7 +203,7 @@ bf16_vectorloop:
 	WORD $0x6e48fc80       // bfmlalb v0.4s, v4.8h, v8.8h
 
 	// BFMLALT: BFloat16 fused multiply-add long (top/upper elements)
-	WORD $0x4e48fc80       // bfmlalt v0.4s, v4.8h, v8.8h
+	WORD $0x6ec8fc80       // bfmlalt v0.4s, v4.8h, v8.8h
 
 	SUBS $1, R3, R3
 	BNE bf16_vectorloop

@@ -1,4 +1,4 @@
-//go:build !noasm && arm64 && !darwin
+//go:build !noasm && arm64
 
 package simplego
 
