@@ -30,6 +30,9 @@ func execNormalizedDotGeneralInt8ToInt32(lhs, rhs, output *Buffer, params *dotGe
 	rhsBatchStride := rhsCrossSize * contractingSize
 	outputBatchStride := lhsCrossSize * rhsCrossSize
 
+	// Block size of 64 for cache-efficient tiled matrix multiplication.
+	// This creates 64x64 tiles that fit well in L1 cache (~32KB on most ARM64).
+	// Each tile is 64*64*1 = 4KB for int8, leaving room for LHS, RHS, and output tiles.
 	const blockSize = 64
 
 	for batchIdx := batchStartIdx; batchIdx < batchEndIdx; batchIdx++ {
@@ -54,10 +57,12 @@ func execNormalizedDotGeneralInt8ToInt32(lhs, rhs, output *Buffer, params *dotGe
 							rhsColStartIdx := rhsBaseIdx + idxRhsCross*contractingSize
 							sum := outputFlat[outputRowStartIdx+idxRhsCross]
 
-							// Call NEON assembly for int8 dot product if available
+							// Call NEON assembly for int8 dot product if available.
+							// Threshold of 16 elements matches SDOT's native 16-byte (128-bit) vector width.
+							// Below 16: scalar path is faster due to NEON call overhead.
+							// At 16+: SDOT processes all elements in one vector operation.
 							dotSize := contractingBlockEnd - outerIdxContracting
 							if hasNEON && dotSize >= 16 {
-								// Use NEON assembly for larger dot products
 								lhsPtr := unsafe.Pointer(&lhsFlat[lhsRowStartIdx+outerIdxContracting])
 								rhsPtr := unsafe.Pointer(&rhsFlat[rhsColStartIdx+outerIdxContracting])
 								dotResult := dotProductInt8_neon_asm(lhsPtr, rhsPtr, int64(dotSize))
@@ -81,7 +86,16 @@ func execNormalizedDotGeneralInt8ToInt32(lhs, rhs, output *Buffer, params *dotGe
 }
 
 // execNormalizedDotGeneralUint8ToInt32 is a specialized implementation for uint8×uint8→int32
-// Also handles mixed int8/uint8 cases by treating everything as unsigned
+// matrix multiplication. It accumulates in int32 to avoid overflow.
+//
+// Note: This function is also called for mixed int8/uint8 operations. In that case,
+// the int8 values are reinterpreted as uint8 (same bit pattern), which means:
+//   - Positive int8 values (0-127) work correctly
+//   - Negative int8 values are treated as large unsigned values (128-255)
+//
+// This behavior matches common quantization schemes where activations and weights
+// use the same signedness. If you need proper signed × unsigned multiplication,
+// you should convert both operands to a wider signed type first.
 func execNormalizedDotGeneralUint8ToInt32(lhs, rhs, output *Buffer, params *dotGeneralNodeData, batchStartIdx, batchEndIdx int) {
 	// Handle both uint8 and int8 inputs by converting to uint8 view
 	var lhsFlat, rhsFlat []uint8
@@ -91,7 +105,8 @@ func execNormalizedDotGeneralUint8ToInt32(lhs, rhs, output *Buffer, params *dotG
 	case dtypes.Uint8:
 		lhsFlat = lhs.flat.([]uint8)
 	case dtypes.Int8:
-		// Reinterpret int8 as uint8 (same bit pattern, different interpretation)
+		// Reinterpret int8 as uint8 (same bit pattern, different interpretation).
+		// This is safe for the UDOT instruction which treats inputs as unsigned.
 		int8Flat := lhs.flat.([]int8)
 		lhsFlat = unsafe.Slice((*uint8)(unsafe.Pointer(&int8Flat[0])), len(int8Flat))
 	}

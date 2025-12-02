@@ -309,10 +309,6 @@ func TestDotGeneralOptimizationReport(t *testing.T) {
 	fmt.Printf("FP16 NEON available: %v\n", hasFP16NEON)
 	fmt.Printf("BF16 NEON available: %v\n", hasBF16NEON)
 
-	// Check SME availability
-	if runtime.GOARCH == "arm64" && runtime.GOOS == "darwin" {
-		fmt.Printf("SME available: %v\n", hasSME)
-	}
 
 	fmt.Println("\nSize class boundaries for buffer pooling:")
 	for i, size := range sizeClasses {

@@ -1,8 +1,12 @@
 //go:build !noasm && arm64
 
 // NEON-accelerated int8 dot product for ARM64
-// Uses SMMLA (Signed Multiply-Multiply-Accumulate) for 4x throughput vs scalar
-// SMMLA performs 16x int8 multiplications and accumulates into 4x int32 in one instruction
+// Uses SDOT (Signed Dot Product) instruction for 4x throughput vs scalar.
+// SDOT performs 4 groups of 4x int8 multiplications and accumulates into 4x int32 lanes.
+// Each lane accumulates: v0.s[i] += sum(v4.b[4*i:4*i+3] * v8.b[4*i:4*i+3])
+//
+// Note: SMMLA (Signed Matrix Multiply-Accumulate) is a different instruction
+// available on ARMv8.6-A that performs 2x8 × 8x2 matrix multiplies.
 
 #include "textflag.h"
 

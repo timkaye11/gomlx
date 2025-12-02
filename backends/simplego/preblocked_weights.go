@@ -140,7 +140,14 @@ func copyWeightToBlocked(buf *Buffer, blockedData any, K, N, blockDim, blockLog2
 // copyWeightToBlockedTyped is the generic implementation for copying weight data to blocked format.
 // Input: flat [K, N] - row-major, so element [k, n] is at index k*N + n
 // Output: blocked [1, crossBlocks, contractBlocks, blockDim, blockDim]
-// For RHS in standard matmul, we iterate: for each column block (n), for each row block (k)
+//
+// The kernel expects blocks where:
+// - First dimension (rows) = cross dimension (N)
+// - Second dimension (cols) = contracting dimension (K)
+// So the block layout is [crossLocal, contractLocal] = [n_local, k_local]
+//
+// This means we need to transpose from flat [K, N] to block [N_local, K_local]:
+// - flat[k, n] → block[n_local, k_local]
 func copyWeightToBlockedTyped[T any](flat []T, blocked []T, K, N, blockDim, crossBlocks, contractBlocks int) {
 	blockSize := blockDim * blockDim
 
@@ -154,20 +161,18 @@ func copyWeightToBlockedTyped[T any](flat []T, blocked []T, K, N, blockDim, cros
 
 			// Calculate the start of this block in the blocked output
 			// Shape: [1, crossBlocks, contractBlocks, blockDim, blockDim]
-			// Index: batchIdx * (crossBlocks * contractBlocks * blockSize) +
-			//        crossBlockIdx * (contractBlocks * blockSize) +
-			//        contractBlockIdx * blockSize
 			blockStartIdx := crossBlockIdx*(contractBlocks*blockSize) + contractBlockIdx*blockSize
 
-			// Copy data into the block
-			// Within a block, we iterate: for each row in block (local k), for each col in block (local n)
-			for localK := 0; localK < blockDim; localK++ {
-				globalK := kStart + localK
-				for localN := 0; localN < blockDim; localN++ {
-					globalN := nStart + localN
+			// Copy data into the block with transpose
+			// Block layout: [crossLocal, contractLocal] = [n_local, k_local]
+			// We iterate over the flat input and place values in transposed positions
+			for localN := 0; localN < blockDim; localN++ {
+				globalN := nStart + localN
+				for localK := 0; localK < blockDim; localK++ {
+					globalK := kStart + localK
 
-					// Index in blocked output
-					blockedIdx := blockStartIdx + localK*blockDim + localN
+					// Index in blocked output: row=localN (cross), col=localK (contract)
+					blockedIdx := blockStartIdx + localN*blockDim + localK
 
 					// Get value from flat input (or zero if out of bounds)
 					if globalK < kEnd && globalN < nEnd {
@@ -192,20 +197,26 @@ func (pbw *PreBlockedWeight) GetPreBlockedBuffer() *Buffer {
 
 // CanUsePreBlockedWeight checks if a pre-blocked weight can be used for this matmul operation.
 // Returns true if the weight shape and blocking parameters match.
+// Supports both unbatched [M, K] × [K, N] and batched [B, M, K] × [K, N] operations
+// where RHS weights are shared across the batch.
 func CanUsePreBlockedWeight(pbw *PreBlockedWeight, rhsShape shapes.Shape, params *dotGeneralNodeData) bool {
 	if pbw == nil {
 		return false
 	}
 
-	// Check that it's a standard 2D matmul: [M, K] × [K, N]
-	if len(params.lhsBatchAxes) != 0 || len(params.rhsBatchAxes) != 0 {
-		return false // Batched matmul not yet supported for pre-blocked weights
+	// RHS must have no batch dimensions (weights shared across batch)
+	if len(params.rhsBatchAxes) != 0 {
+		return false
 	}
+
+	// Single contracting axis for both LHS and RHS
 	if len(params.lhsContractingAxes) != 1 || len(params.rhsContractingAxes) != 1 {
 		return false
 	}
+
+	// RHS contracting must be axis 0 for standard [K, N] weight layout
 	if params.rhsContractingAxes[0] != 0 {
-		return false // RHS contracting must be axis 0 for standard [K, N] weight
+		return false
 	}
 
 	// Check shape matches

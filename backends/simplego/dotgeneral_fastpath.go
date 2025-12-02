@@ -1,8 +1,6 @@
 package simplego
 
 import (
-	"unsafe"
-
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 )
@@ -140,22 +138,34 @@ func execDotGeneralFastPath(backend *Backend, lhs, rhs *Buffer, params *dotGener
 
 // execDotGeneralFastPathFloat32 is the fast path for float32 matrix multiplication.
 // It directly operates on the input data without transposing to normalized form.
+//
+// Memory layout for row-major tensors:
+// - LHS [M, K]: element [m, k] is at index m*K + k (rows are contiguous)
+// - RHS [K, N]: element [k, n] is at index k*N + n (rows are contiguous)
+// - Output [M, N]: element [m, n] is at index m*N + n
+//
+// For the dot product of row m with column n:
+//   sum over k: LHS[m,k] * RHS[k,n] = sum over k: lhs[m*K+k] * rhs[k*N+n]
+//
+// Note: Column n in RHS has stride N between elements (not contiguous),
+// so we cannot use the Group4 NEON path which requires contiguous columns.
+// We use the standard scalar loop with explicit strided access.
 func execDotGeneralFastPathFloat32(backend *Backend, lhs, rhs *Buffer, params *dotGeneralNodeData, output *Buffer) {
 	lhsFlat := lhs.flat.([]float32)
 	rhsFlat := rhs.flat.([]float32)
 	outputFlat := output.flat.([]float32)
 
 	batchSize := params.batchSize
-	lhsCrossSize := params.lhsCrossSize   // M
-	rhsCrossSize := params.rhsCrossSize   // N
+	lhsCrossSize := params.lhsCrossSize      // M
+	rhsCrossSize := params.rhsCrossSize      // N
 	contractingSize := params.contractingSize // K
 
-	lhsBatchStride := lhsCrossSize * contractingSize
-	rhsBatchStride := rhsCrossSize * contractingSize
-	outputBatchStride := lhsCrossSize * rhsCrossSize
+	lhsBatchStride := lhsCrossSize * contractingSize  // M * K
+	rhsBatchStride := rhsCrossSize * contractingSize  // N * K (but actually K * N for [K,N])
+	outputBatchStride := lhsCrossSize * rhsCrossSize  // M * N
 
-	// Use NEON for float32 dot products when available
-	useNEON := hasNEON && contractingSize >= 4
+	// For row-major RHS [K, N], the stride between elements in the same column is N
+	rhsColStride := rhsCrossSize // N
 
 	for batchIdx := 0; batchIdx < batchSize; batchIdx++ {
 		lhsBaseIdx := batchIdx * lhsBatchStride
@@ -166,51 +176,22 @@ func execDotGeneralFastPathFloat32(backend *Backend, lhs, rhs *Buffer, params *d
 			lhsRowStart := lhsBaseIdx + m*contractingSize
 			outputRowStart := outputBaseIdx + m*rhsCrossSize
 
-			// Process 4 columns at a time using NEON Group4 if available
-			n := 0
-			if useNEON && rhsCrossSize >= 4 {
-				for ; n+3 < rhsCrossSize; n += 4 {
-					rhsCol0Start := rhsBaseIdx + n*contractingSize
-					r0, r1, r2, r3 := dotProductGroup4_neon_asm(
-						unsafe.Pointer(&lhsFlat[lhsRowStart]),
-						unsafe.Pointer(&rhsFlat[rhsCol0Start]),
-						int64(contractingSize),
-						int64(contractingSize),
-					)
-					outputFlat[outputRowStart+n] = r0
-					outputFlat[outputRowStart+n+1] = r1
-					outputFlat[outputRowStart+n+2] = r2
-					outputFlat[outputRowStart+n+3] = r3
-				}
-			}
-
-			// Handle remaining columns
-			for ; n < rhsCrossSize; n++ {
-				rhsColStart := rhsBaseIdx + n*contractingSize
+			for n := 0; n < rhsCrossSize; n++ {
+				// For column n in row-major [K,N], element [k,n] is at k*N + n
+				rhsColStart := rhsBaseIdx + n
 				var sum float32
 
-				if useNEON {
-					sum = dotProduct_neon_asm(
-						unsafe.Pointer(&lhsFlat[lhsRowStart]),
-						unsafe.Pointer(&rhsFlat[rhsColStart]),
-						int64(contractingSize),
-					)
-				} else {
-					// Scalar fallback with loop unrolling
-					k := 0
-					for ; k+7 < contractingSize; k += 8 {
-						sum += lhsFlat[lhsRowStart+k]*rhsFlat[rhsColStart+k] +
-							lhsFlat[lhsRowStart+k+1]*rhsFlat[rhsColStart+k+1] +
-							lhsFlat[lhsRowStart+k+2]*rhsFlat[rhsColStart+k+2] +
-							lhsFlat[lhsRowStart+k+3]*rhsFlat[rhsColStart+k+3] +
-							lhsFlat[lhsRowStart+k+4]*rhsFlat[rhsColStart+k+4] +
-							lhsFlat[lhsRowStart+k+5]*rhsFlat[rhsColStart+k+5] +
-							lhsFlat[lhsRowStart+k+6]*rhsFlat[rhsColStart+k+6] +
-							lhsFlat[lhsRowStart+k+7]*rhsFlat[rhsColStart+k+7]
-					}
-					for ; k < contractingSize; k++ {
-						sum += lhsFlat[lhsRowStart+k] * rhsFlat[rhsColStart+k]
-					}
+				// Scalar loop with strided RHS access
+				// We cannot use NEON here because RHS column elements are not contiguous
+				k := 0
+				for ; k+3 < contractingSize; k += 4 {
+					sum += lhsFlat[lhsRowStart+k]*rhsFlat[rhsColStart+k*rhsColStride] +
+						lhsFlat[lhsRowStart+k+1]*rhsFlat[rhsColStart+(k+1)*rhsColStride] +
+						lhsFlat[lhsRowStart+k+2]*rhsFlat[rhsColStart+(k+2)*rhsColStride] +
+						lhsFlat[lhsRowStart+k+3]*rhsFlat[rhsColStart+(k+3)*rhsColStride]
+				}
+				for ; k < contractingSize; k++ {
+					sum += lhsFlat[lhsRowStart+k] * rhsFlat[rhsColStart+k*rhsColStride]
 				}
 
 				outputFlat[outputRowStart+n] = sum

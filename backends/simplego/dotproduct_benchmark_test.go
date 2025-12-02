@@ -67,14 +67,6 @@ func BenchmarkDotProductImplementations(b *testing.B) {
 			})
 		}
 
-		// SME Optimization (Group 4)
-		if hasSME {
-			b.Run(fmt.Sprintf("SME/size_%d", size), func(b *testing.B) {
-				for i := 0; i < b.N; i++ {
-					_, _, _, _ = dotProductInnerLoopSME(lhs, rhs, output, 0, 0, 0, size)
-				}
-			})
-		}
 	}
 }
 
@@ -106,11 +98,4 @@ func BenchmarkDotProductSingleComparison(b *testing.B) {
 		})
 	}
 	
-	if hasSME {
-		b.Run("SME_Single_1024", func(b *testing.B) {
-			for i := 0; i < b.N; i++ {
-				_ = dotProduct_sme(lhs, rhs, 0, 0, int64(size))
-			}
-		})
-	}
 }

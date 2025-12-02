@@ -94,6 +94,26 @@ func (c *PreBlockedWeightCache) Set(buf *Buffer, pbw *PreBlockedWeight) {
 	c.mu.Unlock()
 }
 
+// Invalidate removes a pre-blocked weight from the cache.
+// Call this when the underlying buffer data has changed or when the buffer is freed.
+// This prevents stale cache entries when memory is reused.
+func (c *PreBlockedWeightCache) Invalidate(buf *Buffer) {
+	key := bufferKey(buf)
+	if key == 0 {
+		return
+	}
+	c.mu.Lock()
+	delete(c.cache, key)
+	c.mu.Unlock()
+}
+
+// Clear removes all entries from the cache.
+func (c *PreBlockedWeightCache) Clear() {
+	c.mu.Lock()
+	c.cache = make(map[uintptr]*PreBlockedWeight)
+	c.mu.Unlock()
+}
+
 // GetOrCreate retrieves a pre-blocked weight or creates one if not cached.
 // This is the main entry point for lazily caching pre-blocked weights.
 func (c *PreBlockedWeightCache) GetOrCreate(buf *Buffer) *PreBlockedWeight {
@@ -112,10 +132,11 @@ func (c *PreBlockedWeightCache) GetOrCreate(buf *Buffer) *PreBlockedWeight {
 
 // execDotGeneralWithPreBlockedRHS executes DotGeneral using a pre-blocked RHS weight.
 // This skips the RHS blocking step entirely, providing significant speedup for inference.
+// Supports both unbatched [M, K] × [K, N] and batched [B, M, K] × [K, N] operations.
 func execDotGeneralWithPreBlockedRHS(backend *Backend, lhs *Buffer, rhsPreBlocked *PreBlockedWeight, params *dotGeneralNodeData, output *Buffer) error {
 	dtype := lhs.shape.DType
 
-	// Get the pre-blocked RHS buffer
+	// Get the pre-blocked RHS buffer (shared across all batch elements)
 	rhsBlocks := rhsPreBlocked.GetPreBlockedBuffer()
 
 	// We still need to block the LHS (activations)
@@ -137,7 +158,7 @@ func execDotGeneralWithPreBlockedRHS(backend *Backend, lhs *Buffer, rhsPreBlocke
 	outputBlocks.shape = params.outputBlockedShape
 	outputBlocks.Zeros()
 
-	// Set up recursive data for kernel execution
+	// Set up base recursive data for kernel execution
 	var recursive dotGeneralRecursiveData
 	recursive.backend = backend
 
@@ -161,10 +182,36 @@ func execDotGeneralWithPreBlockedRHS(backend *Backend, lhs *Buffer, rhsPreBlocke
 		}
 	}
 
-	// Execute - for pre-blocked path we only support batchSize=1 for now
+	// Decide on using parallelism across the batch
+	useBatchParallelism := backend.workers.IsEnabled()
+	batchSplitSize := 1
+	if useBatchParallelism && !backend.workers.IsUnlimited() {
+		batchSplitSize = (params.batchSize + maxParallelism - 1) / maxParallelism
+	}
+
+	// Loop over examples in the batch
+	// RHS is pre-blocked and shared across all batches (rhsBatchOffset = 0)
 	wg := xsync.NewDynamicWaitGroup()
-	wg.Add(1)
-	recursive.apply(0, recursive.lhsCrossBlocks, 0, recursive.rhsCrossBlocks, 0, recursive.contractBlocks, 0, wg)
+	for outerBatchIdx := 0; outerBatchIdx < params.batchSize; outerBatchIdx += batchSplitSize {
+		wg.Add(1)
+		batchSplitFn := func() {
+			for innerBatchIdx := outerBatchIdx; innerBatchIdx < min(outerBatchIdx+batchSplitSize, params.batchSize); innerBatchIdx++ {
+				var batchRecursive dotGeneralRecursiveData
+				batchRecursive = recursive
+				batchRecursive.lhsBatchOffset = innerBatchIdx * recursive.lhsCrossBlocks * recursive.contractBlocks
+				batchRecursive.rhsBatchOffset = 0 // RHS is shared - always use batch 0
+				batchRecursive.outputBatchOffset = innerBatchIdx * recursive.lhsCrossBlocks * recursive.rhsCrossBlocks
+				wg.Add(1)
+				batchRecursive.apply(0, recursive.lhsCrossBlocks, 0, recursive.rhsCrossBlocks, 0, recursive.contractBlocks, 0, wg)
+			}
+			wg.Done()
+		}
+		if useBatchParallelism {
+			backend.workers.WaitToStart(batchSplitFn)
+		} else {
+			batchSplitFn()
+		}
+	}
 	wg.Wait()
 
 	// Free the LHS block buffer (RHS is pre-blocked and reusable)
@@ -203,24 +250,37 @@ func TryExecDotGeneralWithPreBlockedWeights(backend *Backend, lhs, rhs *Buffer, 
 }
 
 // canUsePreBlockedPath checks if the DotGeneral operation can use pre-blocked weights.
+// This supports both unbatched matmul [M, K] × [K, N] and batched matmul [B, M, K] × [K, N]
+// where the RHS weights are shared across the batch dimension.
 func canUsePreBlockedPath(lhs, rhs *Buffer, params *dotGeneralNodeData) bool {
-	// Only support 2D × 2D matmul: [M, K] × [K, N]
-	if lhs.shape.Rank() != 2 || rhs.shape.Rank() != 2 {
+	// RHS (weights) must be 2D: [K, N]
+	// LHS can be 2D [M, K] or have batch dimensions that get normalized
+	if rhs.shape.Rank() != 2 {
 		return false
 	}
 
-	// No batch dimensions
-	if len(params.lhsBatchAxes) != 0 || len(params.rhsBatchAxes) != 0 {
+	// RHS must have no batch dimensions (weights are shared across batch)
+	if len(params.rhsBatchAxes) != 0 {
 		return false
 	}
 
-	// Single contracting axis
+	// Single contracting axis for both
 	if len(params.lhsContractingAxes) != 1 || len(params.rhsContractingAxes) != 1 {
 		return false
 	}
 
-	// Standard matmul pattern: LHS contracts on axis 1, RHS contracts on axis 0
-	if params.lhsContractingAxes[0] != 1 || params.rhsContractingAxes[0] != 0 {
+	// RHS contracts on axis 0 (standard [K, N] weight layout)
+	if params.rhsContractingAxes[0] != 0 {
+		return false
+	}
+
+	// LHS must contract on its last axis (the K dimension)
+	// For 2D: [M, K] contracts on axis 1
+	// For 3D: [B, M, K] contracts on axis 2
+	// In normalized form, this is always the last axis
+	lhsRank := lhs.shape.Rank()
+	expectedLhsContractingAxis := lhsRank - 1
+	if params.lhsContractingAxes[0] != expectedLhsContractingAxis {
 		return false
 	}
 

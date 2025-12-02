@@ -200,23 +200,24 @@ bf16_vectorloop:
 	CBZ R4, bf16_done
 
 bf16_scalarloop:
-	// Load single BF16 values
-	WORD $0x7c402404       // ldr h4, [x0], #2
-	WORD $0x7c402428       // ldr h8, [x1], #2
+	// Load single BF16 values into GPRs and convert to FP32
+	// BF16 format: [sign(1), exponent(8), mantissa(7)]
+	// FP32 format: [sign(1), exponent(8), mantissa(23)]
+	// Conversion: shift BF16 left by 16 bits, lower 16 bits become zero
+	// Use R5, R6 for values (R4 is the loop counter)
+	WORD $0x78402405       // ldrh w5, [x0], #2  (load BF16 as unsigned 16-bit, post-index)
+	WORD $0x78402426       // ldrh w6, [x1], #2  (post-index form: 0x78 not 0x79)
 
-	// Convert BF16 to FP32 by shifting left 16 bits
-	// BF16 is just the upper 16 bits of FP32
-	WORD $0x0e213c84       // sxtl v4.4s, v4.4h (sign extend)
-	WORD $0x0e213d08       // sxtl v8.4s, v8.4h
+	// Shift left by 16 to convert BF16 to FP32 bit pattern
+	LSL $16, R5, R5        // w5 = bf16_a << 16
+	LSL $16, R6, R6        // w6 = bf16_b << 16
 
-	// Shift left by 16 to convert BF16 to FP32
-	WORD $0x4f500484       // shl v4.4s, v4.4s, #16
-	WORD $0x4f500508       // shl v8.4s, v8.4s, #16
+	// Move to FP registers (reinterpret bits as float32)
+	WORD $0x1e2700a4       // fmov s4, w5
+	WORD $0x1e2700c5       // fmov s5, w6
 
-	// Extract scalar and multiply-accumulate
-	WORD $0x0e043c84       // mov s4, v4.s[0]
-	WORD $0x0e043d08       // mov s8, v8.s[0]
-	WORD $0x1f080080       // fmadd s0, s4, s8, s0
+	// Multiply-accumulate: s0 = s0 + s4 * s5
+	WORD $0x1f050080       // fmadd s0, s4, s5, s0
 
 	SUBS $1, R4, R4
 	BNE bf16_scalarloop

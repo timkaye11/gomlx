@@ -530,10 +530,12 @@ func buildDotGeneralKernel[T PODNumericConstraints](lhs, rhs, output *Buffer, bl
 				var sum0, sum1, sum2, sum3 T
 
 				// SIMD acceleration for float32 on ARM64 using NEON Group4.
-				// Benchmarks show NEON Group4 outperforms SME Group4 at all sizes
-				// because SME's smstart/smstop overhead (~100+ cycles) is too high,
-				// even though SME has wider vectors (512-bit vs 128-bit).
 				// For other types or platforms, fall back to pure Go.
+				//
+				// Threshold of blockDim >= 64 was chosen based on benchmarking:
+				// - Below 64: NEON overhead (function call, register setup) exceeds benefit
+				// - At 64: NEON processes 16 vector iterations (64/4 elements per iteration)
+				// - This threshold may need adjustment for different ARM64 microarchitectures
 				if lhsFloat32, ok := any(lhsFlat).([]float32); ok {
 					if hasNEON && blockDim >= 64 {
 						// NEON Group4 path - fastest for all ARM64 including Apple M4

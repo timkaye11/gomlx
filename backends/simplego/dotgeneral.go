@@ -230,24 +230,6 @@ const (
 	checkProblemSize
 )
 
-// convertUint8ToInt8 converts a uint8 buffer to int8 by copying data with reinterpretation
-func (b *Backend) convertUint8ToInt8(buf *Buffer) *Buffer {
-	if buf.shape.DType != dtypes.Uint8 {
-		return buf
-	}
-
-	uint8Flat := buf.flat.([]uint8)
-	newBuf := b.getBufferForShape(shapes.Make(dtypes.Int8, buf.shape.Dimensions...))
-	int8Flat := newBuf.flat.([]int8)
-
-	// Copy with reinterpretation: uint8 → int8
-	for i, v := range uint8Flat {
-		int8Flat[i] = int8(v)
-	}
-
-	return newBuf
-}
-
 // execDotGeneral executes the DotGeneral by first normalizing and repackaging the tensors into blocks.
 func execDotGeneral(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*Buffer, error) {
 	lhs, rhs := inputs[0], inputs[1]
