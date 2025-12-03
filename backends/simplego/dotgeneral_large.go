@@ -370,12 +370,15 @@ func dgCopyOutputBlockToFlatFloat16(blockSource, output *Buffer) {
 				outputBlockOffset := outputLhsOffset + rhsStart*outputRhsStride
 
 				// Copy valid elements from the block
+				rowLen := rhsEnd - rhsStart
 				for blockRow := 0; blockRow < lhsEnd-lhsStart; blockRow++ {
 					sourceRowOffset := sourceBlockOffset + blockRow*blockDim
 					outputRowOffset := outputBlockOffset + blockRow*outputLhsStride
-					for blockCol := range rhsEnd - rhsStart {
-						outputData[outputRowOffset+blockCol] = float16.Fromfloat32(sourceData[sourceRowOffset+blockCol])
-					}
+					// Use the NEON-accelerated bulk converter when available
+					convertFloat32SliceToFloat16(
+						sourceData[sourceRowOffset:sourceRowOffset+rowLen],
+						outputData[outputRowOffset:outputRowOffset+rowLen],
+					)
 				}
 			}
 		}
@@ -424,8 +427,9 @@ func execDotGeneralLarge(backend *Backend, lhs, rhs *Buffer, params *dotGeneralN
 		if backend.workers.IsUnlimited() {
 			recursive.maxDepthParallelization = 8 // At most 2^8 = 256 goroutines are spawned.
 		} else {
+			// Use log2 of parallelism without the +1 to reduce goroutine overhead.
+			// Combined with increased base case threshold, this reduces synchronization costs.
 			recursive.maxDepthParallelization = log2int(maxParallelism)
-			recursive.maxDepthParallelization += 1 // We want to allow slightly more fine-grained parallelization.
 		}
 	}
 
@@ -503,8 +507,8 @@ func (r *dotGeneralRecursiveData) apply(
 	maxLen := max(max(lhsCrossLen, rhsCrossLen), contractingLen)
 
 	// Base case: no splitting, simple go over all the crosses and calculate the matrix multiplication for this
-	// slice.
-	if maxLen <= 2 {
+	// slice. Threshold of 4 reduces recursion/threading overhead while maintaining parallelism.
+	if maxLen <= 4 {
 		for lhsCross := lhsCrossStart; lhsCross < lhsCrossEnd; lhsCross++ {
 			for rhsCross := rhsCrossStart; rhsCross < rhsCrossEnd; rhsCross++ {
 				outputBlockIdx := r.outputBatchOffset + lhsCross*r.rhsCrossBlocks + rhsCross
@@ -593,12 +597,11 @@ func buildDotGeneralKernel[T PODNumericConstraints](lhs, rhs, output *Buffer, bl
 				// SIMD acceleration for float32 on ARM64 using NEON Group4.
 				// For other types or platforms, fall back to pure Go.
 				//
-				// Threshold of blockDim >= 64 was chosen based on benchmarking:
-				// - Below 64: NEON overhead (function call, register setup) exceeds benefit
-				// - At 64: NEON processes 16 vector iterations (64/4 elements per iteration)
-				// - This threshold may need adjustment for different ARM64 microarchitectures
+				// Threshold of blockDim >= 16 enables NEON for most practical matrix sizes.
+				// At blockDim=32 (default for float32), NEON processes 8 vector iterations per row.
+				// Even at blockDim=16, we get 4 vector iterations which provides meaningful speedup.
 				if lhsFloat32, ok := any(lhsFlat).([]float32); ok {
-					if hasNEON && blockDim >= 64 {
+					if hasNEON && blockDim >= 16 {
 						// NEON Group4 path - fastest for all ARM64 including Apple M4
 						rhsFloat32 := any(rhsFlat).([]float32)
 						outputFloat32 := any(outputFlat).([]float32)
