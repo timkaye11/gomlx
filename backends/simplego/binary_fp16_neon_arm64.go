@@ -159,27 +159,3 @@ func execBinaryFloat16NEON(opType int, lhs, rhs []float16.Float16, output []floa
 		}
 	}
 }
-
-// execBinaryFloat16NEONAdd wraps execBinaryFloat16NEON for Add operation
-func execBinaryFloat16NEONAdd(lhs, rhs []float16.Float16, output []float16.Float16,
-	lhsShape, rhsShape, outputShape shapes.Shape) {
-	execBinaryFloat16NEON(0, lhs, rhs, output, lhsShape, rhsShape, outputShape)
-}
-
-// execBinaryFloat16NEONMul wraps execBinaryFloat16NEON for Mul operation
-func execBinaryFloat16NEONMul(lhs, rhs []float16.Float16, output []float16.Float16,
-	lhsShape, rhsShape, outputShape shapes.Shape) {
-	execBinaryFloat16NEON(1, lhs, rhs, output, lhsShape, rhsShape, outputShape)
-}
-
-// execBinaryFloat16NEONSub wraps execBinaryFloat16NEON for Sub operation
-func execBinaryFloat16NEONSub(lhs, rhs []float16.Float16, output []float16.Float16,
-	lhsShape, rhsShape, outputShape shapes.Shape) {
-	execBinaryFloat16NEON(2, lhs, rhs, output, lhsShape, rhsShape, outputShape)
-}
-
-// execBinaryFloat16NEONDiv wraps execBinaryFloat16NEON for Div operation
-func execBinaryFloat16NEONDiv(lhs, rhs []float16.Float16, output []float16.Float16,
-	lhsShape, rhsShape, outputShape shapes.Shape) {
-	execBinaryFloat16NEON(3, lhs, rhs, output, lhsShape, rhsShape, outputShape)
-}
