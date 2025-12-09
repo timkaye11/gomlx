@@ -52,7 +52,7 @@ type ContextFn func(ctx *context.Context) *context.Context
 
 func CreateDefaultContext() *context.Context {
 	ctx := context.New()
-	ctx.RngStateReset()
+	ctx.ResetRNGState()
 	ctx.SetParams(map[string]any{
 		// Model type to use
 		"model":           "linear",
@@ -222,7 +222,7 @@ func TrainModel(ctx *context.Context, dataDir, checkpointPath string, paramsSet 
 			loop.LoopStep, loop.MedianTrainStepDuration().Microseconds())
 
 		// Update batch normalization averages, if they are used.
-		if batchnorm.UpdateAverages(trainer, trainEvalDS) {
+		if must.M1(batchnorm.UpdateAverages(trainer, trainEvalDS)) {
 			fmt.Println("\tUpdated batch normalization mean/variances averages.")
 			if checkpoint != nil {
 				must.M(checkpoint.Save())

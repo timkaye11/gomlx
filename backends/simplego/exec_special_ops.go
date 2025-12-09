@@ -46,7 +46,7 @@ func init() {
 	nodeExecutors[backends.OpTypeReduceWindow] = execReduceWindow
 
 	// For nodes with multiple outputs:
-	multiOutputsNodeExecutors[backends.OpTypeRngBitGenerator] = execRngBitGenerator
+	multiOutputsNodeExecutors[backends.OpTypeRNGBitGenerator] = execRNGBitGenerator
 }
 
 // calculateStrides of a tensor assuming row-major order of the flat data.
@@ -958,12 +958,11 @@ func execGatherGeneric[T PODIntegerConstraints](params ...any) any {
 		for ii, axis := range startIndexMap {
 			startIndexForAxis := startIndicesFlat[indirectStartIndices[ii]]
 			idx := int(startIndexForAxis)
-			// Clamp indices to valid range [0, dim-1] to match XLA/StableHLO semantics.
-			if idx < 0 {
-				idx = 0
-			} else if dim := operandDimensions[axis]; idx >= dim {
-				idx = dim - 1
-			}
+			// Clamp indices to valid range [0, dim-sliceSize] to match XLA/StableHLO semantics.
+			dim := operandDimensions[axis]
+			maxIdx := dim - sliceSizes[axis]
+			maxIdx = max(0, maxIdx)
+			idx = max(0, min(maxIdx, idx))
 			operandStartIndices[axis] = idx
 		}
 		operandBytesIdx = 0
@@ -1838,8 +1837,8 @@ func execSliceGeneric[T SupportedTypesConstraints](operand, output *Buffer, para
 
 // RngBitGenerator ====================================================================================================
 
-// execRngBitGenerator is the executor function registered for backends.OpTypeRngBitGenerator.
-func execRngBitGenerator(backend *Backend, node *Node, inputs []*Buffer, inputsOwned []bool) ([]*Buffer, error) {
+// execRNGBitGenerator is the executor function registered for backends.OpTypeRngBitGenerator.
+func execRNGBitGenerator(backend *Backend, node *Node, inputs []*Buffer, inputsOwned []bool) ([]*Buffer, error) {
 	state := inputs[0]
 	stateFlat := state.flat.([]uint64)
 
@@ -1873,7 +1872,7 @@ func execRngBitGenerator(backend *Backend, node *Node, inputs []*Buffer, inputsO
 	// See details on Go source code src/math/rand/v2/pcg.go:
 	rngState, err := rng.MarshalBinary()
 	if err != nil {
-		panic(errors.Wrapf(err, "cannot update RngBitGenerator state"))
+		panic(errors.Wrapf(err, "cannot update RNGBitGenerator state"))
 	}
 	if len(rngState) != 20 && string(rngState[:4]) != "pcg:" {
 		return nil, errors.Errorf("format of PCG random number generator changed (we got %d bytes starting with %q, we wanted 20 and starting with the string 'pcg:'), pls open an issue in GoMLX", rngState[:4], len(rngState))
