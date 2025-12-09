@@ -146,8 +146,8 @@ g4_scalarloop:
 	BNE g4_scalarloop
 
 g4_done:
-	FMOVS F0, ret0+32(FP)
-	FMOVS F1, ret1+36(FP)
-	FMOVS F2, ret2+40(FP)
-	FMOVS F3, ret3+44(FP)
+	FMOVS F0, r0+32(FP)
+	FMOVS F1, r1+36(FP)
+	FMOVS F2, r2+40(FP)
+	FMOVS F3, r3+44(FP)
 	RET

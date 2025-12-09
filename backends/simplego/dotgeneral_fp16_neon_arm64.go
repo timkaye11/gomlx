@@ -21,17 +21,6 @@ func dotProductFP16Group4_neon_asm(a, b unsafe.Pointer, b_stride, n int64) (r0, 
 //go:noescape
 func dotProductBF16_neon_asm(a, b unsafe.Pointer, n int64) float32
 
-// Debug functions for BF16 investigation
-//
-//go:noescape
-func dotProductBF16_debug_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32)
-
-//go:noescape
-func dotProductBFMLALB_only_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32)
-
-//go:noescape
-func dotProductBFMLALT_only_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32)
-
 // hasFP16NEON indicates whether FP16 NEON instructions are available.
 // FMLAL/FMLAL2 require ARMv8.2-A with FP16 extension (FEAT_FHM).
 // Most modern ARM64 chips (Apple M1+, recent Cortex-A) support this.

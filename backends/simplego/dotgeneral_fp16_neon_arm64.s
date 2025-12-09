@@ -167,10 +167,10 @@ g4fp16_scalarloop:
 	BNE g4fp16_scalarloop
 
 g4fp16_done:
-	FMOVS F0, ret0+32(FP)
-	FMOVS F1, ret1+36(FP)
-	FMOVS F2, ret2+40(FP)
-	FMOVS F3, ret3+44(FP)
+	FMOVS F0, r0+32(FP)
+	FMOVS F1, r1+36(FP)
+	FMOVS F2, r2+40(FP)
+	FMOVS F3, r3+44(FP)
 	RET
 
 
@@ -241,88 +241,4 @@ bf16_scalarloop:
 
 bf16_done:
 	FMOVS F0, ret+24(FP)
-	RET
-
-// func dotProductBF16_debug_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32)
-// Debug version that returns the 4 accumulator lanes before horizontal reduction
-TEXT ·dotProductBF16_debug_asm(SB), NOSPLIT, $0-48
-	MOVD a+0(FP), R0       // R0 = a pointer (BF16 array)
-	MOVD b+8(FP), R1       // R1 = b pointer (BF16 array)
-	MOVD n+16(FP), R2      // R2 = n (count of BF16 elements)
-
-	// Initialize FP32 accumulator to zero
-	WORD $0x4f000400       // movi v0.4s, #0
-
-	// Process 8 BF16 elements at a time
-	LSR $3, R2, R3         // R3 = n / 8
-	AND $7, R2, R4         // R4 = n % 8
-
-	CBZ R3, bf16_debug_done
-
-bf16_debug_vectorloop:
-	// Load 8 BF16 values from each array (post-index by 16 bytes)
-	WORD $0x4cdf7804       // ld1 {v4.8h}, [x0], #16 (post-index)
-	WORD $0x4cdf7828       // ld1 {v8.8h}, [x1], #16 (post-index)
-
-	// BFMLALB: BFloat16 fused multiply-add long (bottom/lower elements)
-	WORD $0x6e48fc80       // bfmlalb v0.4s, v4.8h, v8.8h
-
-	// BFMLALT: BFloat16 fused multiply-add long (top/upper elements)
-	WORD $0x6ec8fc80       // bfmlalt v0.4s, v4.8h, v8.8h
-
-	SUBS $1, R3, R3
-	BNE bf16_debug_vectorloop
-
-bf16_debug_done:
-	// Store v0.4s to the return slots on the stack
-	// Calculate address of ret0 on stack
-	MOVD $ret0+24(FP), R5
-	// Store all 4 float32 lanes to consecutive memory locations
-	WORD $0x4c007ca0       // st1 {v0.4s}, [x5]
-	RET
-
-// func dotProductBFMLALB_only_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32)
-// Test version that ONLY runs BFMLALB to isolate its behavior
-TEXT ·dotProductBFMLALB_only_asm(SB), NOSPLIT, $0-48
-	MOVD a+0(FP), R0
-	MOVD b+8(FP), R1
-	MOVD n+16(FP), R2
-
-	WORD $0x4f000400       // movi v0.4s, #0
-	LSR $3, R2, R3
-	CBZ R3, bfmlalb_done
-
-bfmlalb_loop:
-	WORD $0x4cdf7804       // ld1 {v4.8h}, [x0], #16 (post-index)
-	WORD $0x4cdf7828       // ld1 {v8.8h}, [x1], #16 (post-index)
-	WORD $0x6e48fc80       // bfmlalb v0.4s, v4.8h, v8.8h ONLY
-	SUBS $1, R3, R3
-	BNE bfmlalb_loop
-
-bfmlalb_done:
-	MOVD $ret0+24(FP), R5
-	WORD $0x4c007ca0       // st1 {v0.4s}, [x5]
-	RET
-
-// func dotProductBFMLALT_only_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32)
-// Test version that ONLY runs BFMLALT to isolate its behavior
-TEXT ·dotProductBFMLALT_only_asm(SB), NOSPLIT, $0-48
-	MOVD a+0(FP), R0
-	MOVD b+8(FP), R1
-	MOVD n+16(FP), R2
-
-	WORD $0x4f000400       // movi v0.4s, #0
-	LSR $3, R2, R3
-	CBZ R3, bfmlalt_done
-
-bfmlalt_loop:
-	WORD $0x4cdf7804       // ld1 {v4.8h}, [x0], #16 (post-index)
-	WORD $0x4cdf7828       // ld1 {v8.8h}, [x1], #16 (post-index)
-	WORD $0x6ec8fc80       // bfmlalt v0.4s, v4.8h, v8.8h ONLY
-	SUBS $1, R3, R3
-	BNE bfmlalt_loop
-
-bfmlalt_done:
-	MOVD $ret0+24(FP), R5
-	WORD $0x4c007ca0       // st1 {v0.4s}, [x5]
 	RET

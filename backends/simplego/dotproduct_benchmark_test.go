@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build !noasm && arm64
+//go:build benchmark && !noasm && arm64
 
 package simplego
 
