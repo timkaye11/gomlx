@@ -31,12 +31,16 @@ func dotProductBF16_neon_asm(a, b unsafe.Pointer, n int64) float32 {
 var hasFP16NEON = false
 var hasBF16NEON = false
 
-// execNormalizedDotGeneralFloat16ToFloat32 is the scalar fallback for FP16×FP16→FP32.
-func execNormalizedDotGeneralFloat16ToFloat32(lhs, rhs, output *Buffer, params *dotGeneralNodeData, batchStartIdx, batchEndIdx int) {
-	lhsFlat := lhs.flat.([]float16.Float16)
-	rhsFlat := rhs.flat.([]float16.Float16)
-	outputFlat := output.flat.([]float32)
-
+// execNormalizedDotGeneralHalfToFloat32 is a generic scalar fallback for half-precision
+// matrix multiplication (FP16×FP16→FP32 or BF16×BF16→FP32).
+// The toFloat32 function converts values of type T to float32.
+func execNormalizedDotGeneralHalfToFloat32[T any](
+	lhsFlat, rhsFlat []T,
+	outputFlat []float32,
+	toFloat32 func(T) float32,
+	params *dotGeneralNodeData,
+	batchStartIdx, batchEndIdx int,
+) {
 	contractingSize := params.contractingSize
 	lhsCrossSize := params.lhsCrossSize
 	rhsCrossSize := params.rhsCrossSize
@@ -70,8 +74,8 @@ func execNormalizedDotGeneralFloat16ToFloat32(lhs, rhs, output *Buffer, params *
 							sum := outputFlat[outputRowStartIdx+idxRhsCross]
 
 							for idxContracting := outerIdxContracting; idxContracting < contractingBlockEnd; idxContracting++ {
-								lhsVal := lhsFlat[lhsRowStartIdx+idxContracting].Float32()
-								rhsVal := rhsFlat[rhsColStartIdx+idxContracting].Float32()
+								lhsVal := toFloat32(lhsFlat[lhsRowStartIdx+idxContracting])
+								rhsVal := toFloat32(rhsFlat[rhsColStartIdx+idxContracting])
 								sum += lhsVal * rhsVal
 							}
 
@@ -84,57 +88,26 @@ func execNormalizedDotGeneralFloat16ToFloat32(lhs, rhs, output *Buffer, params *
 	}
 }
 
+// execNormalizedDotGeneralFloat16ToFloat32 is the scalar fallback for FP16×FP16→FP32.
+func execNormalizedDotGeneralFloat16ToFloat32(lhs, rhs, output *Buffer, params *dotGeneralNodeData, batchStartIdx, batchEndIdx int) {
+	execNormalizedDotGeneralHalfToFloat32(
+		lhs.flat.([]float16.Float16),
+		rhs.flat.([]float16.Float16),
+		output.flat.([]float32),
+		func(v float16.Float16) float32 { return v.Float32() },
+		params, batchStartIdx, batchEndIdx,
+	)
+}
+
 // execNormalizedDotGeneralBFloat16ToFloat32 is the scalar fallback for BF16×BF16→FP32.
 func execNormalizedDotGeneralBFloat16ToFloat32(lhs, rhs, output *Buffer, params *dotGeneralNodeData, batchStartIdx, batchEndIdx int) {
-	lhsFlat := lhs.flat.([]bfloat16.BFloat16)
-	rhsFlat := rhs.flat.([]bfloat16.BFloat16)
-	outputFlat := output.flat.([]float32)
-
-	contractingSize := params.contractingSize
-	lhsCrossSize := params.lhsCrossSize
-	rhsCrossSize := params.rhsCrossSize
-
-	lhsBatchStride := lhsCrossSize * contractingSize
-	rhsBatchStride := rhsCrossSize * contractingSize
-	outputBatchStride := lhsCrossSize * rhsCrossSize
-
-	const blockSize = 64
-
-	for batchIdx := batchStartIdx; batchIdx < batchEndIdx; batchIdx++ {
-		lhsBaseIdx := batchIdx * lhsBatchStride
-		rhsBaseIdx := batchIdx * rhsBatchStride
-		outputBaseIdx := batchIdx * outputBatchStride
-
-		for outerIdxLhsCross := 0; outerIdxLhsCross < lhsCrossSize; outerIdxLhsCross += blockSize {
-			lhsCrossBlockEnd := min(outerIdxLhsCross+blockSize, lhsCrossSize)
-
-			for outerIdxRhsCross := 0; outerIdxRhsCross < rhsCrossSize; outerIdxRhsCross += blockSize {
-				rhsCrossBlockEnd := min(outerIdxRhsCross+blockSize, rhsCrossSize)
-
-				for outerIdxContracting := 0; outerIdxContracting < contractingSize; outerIdxContracting += blockSize {
-					contractingBlockEnd := min(outerIdxContracting+blockSize, contractingSize)
-
-					for idxLhsCross := outerIdxLhsCross; idxLhsCross < lhsCrossBlockEnd; idxLhsCross++ {
-						lhsRowStartIdx := lhsBaseIdx + idxLhsCross*contractingSize
-						outputRowStartIdx := outputBaseIdx + idxLhsCross*rhsCrossSize
-
-						for idxRhsCross := outerIdxRhsCross; idxRhsCross < rhsCrossBlockEnd; idxRhsCross++ {
-							rhsColStartIdx := rhsBaseIdx + idxRhsCross*contractingSize
-							sum := outputFlat[outputRowStartIdx+idxRhsCross]
-
-							for idxContracting := outerIdxContracting; idxContracting < contractingBlockEnd; idxContracting++ {
-								lhsVal := lhsFlat[lhsRowStartIdx+idxContracting].Float32()
-								rhsVal := rhsFlat[rhsColStartIdx+idxContracting].Float32()
-								sum += lhsVal * rhsVal
-							}
-
-							outputFlat[outputRowStartIdx+idxRhsCross] = sum
-						}
-					}
-				}
-			}
-		}
-	}
+	execNormalizedDotGeneralHalfToFloat32(
+		lhs.flat.([]bfloat16.BFloat16),
+		rhs.flat.([]bfloat16.BFloat16),
+		output.flat.([]float32),
+		func(v bfloat16.BFloat16) float32 { return v.Float32() },
+		params, batchStartIdx, batchEndIdx,
+	)
 }
 
 // buildDotGeneralKernelFloat16ToFloat32 returns a scalar kernel for FP16×FP16→FP32.

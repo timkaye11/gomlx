@@ -12,7 +12,13 @@ import (
 	"github.com/gomlx/gopjrt/dtypes"
 )
 
-// Assembly functions for int8/uint8 dot products (defined in dotgeneral_int8_neon_arm64.s)
+// Assembly functions for int8/uint8 dot products (defined in dotgeneral_int8_neon_arm64.s).
+// These use different ARM NEON instructions:
+//   - dotProductInt8_neon_asm uses SDOT (signed dot product)
+//   - dotProductUint8_neon_asm uses UDOT (unsigned dot product)
+// These are mathematically different operations that produce different results for negative values.
+// The Int8 and Uint8 implementations are intentionally separate to use the correct instruction.
+//
 //go:noescape
 func dotProductInt8_neon_asm(a, b unsafe.Pointer, n int64) int32
 

@@ -265,12 +265,21 @@ func init() {
 	dotGeneralOutputBlockToFlatDTypeMap.Register(dtypes.Float16, dgCopyOutputBlockToFlatFloat16)
 }
 
-// dgCopyOutputBlockToFlatBFloat16 copies the blocked output to a flat output, removing the padding.
-// The blockSource is assumed to be float32 -- matrix multiplication uses float32 to s
+// rowConverterFunc converts a row of float32 source data to the half-precision output format.
+// sourceStart is the starting index in the source float32 slice.
+// outputStart is the starting index in the output slice.
+// count is the number of elements to convert.
+type rowConverterFunc func(sourceStart, outputStart, count int)
+
+// dgCopyOutputBlockToFlatHalfPrecision copies blocked float32 output to a flat half-precision output.
+// The blockSource is assumed to be float32 -- matrix multiplication uses float32 to avoid
+// numeric errors when accumulating results.
 //
 // blockedSource shape: float32[batchSize, lhsCrossBlocks, rhsCrossBlocks, blockDim, blockDim]
-// output shape: bfloat16[batchSize, lhsCrossSize, rhsCrossSize]
-func dgCopyOutputBlockToFlatBFloat16(blockSource, output *Buffer) {
+// output shape: half[batchSize, lhsCrossSize, rhsCrossSize]
+//
+// The convertRow function handles the actual conversion for each row of elements.
+func dgCopyOutputBlockToFlatHalfPrecision(blockSource, output *Buffer, convertRow rowConverterFunc) {
 	sourceDims := blockSource.shape.Dimensions
 	outputDims := output.shape.Dimensions
 
@@ -282,7 +291,6 @@ func dgCopyOutputBlockToFlatBFloat16(blockSource, output *Buffer) {
 	rhsCrossSize := outputDims[2]
 
 	// Pre-calculate strides
-	outputRhsStride := 1
 	outputLhsStride := rhsCrossSize
 	outputBatchStride := lhsCrossSize * rhsCrossSize
 
@@ -290,9 +298,6 @@ func dgCopyOutputBlockToFlatBFloat16(blockSource, output *Buffer) {
 	sourceRhsBlockStride := sourceBlockSize
 	sourceLhsBlockStride := rhsBlockCross * sourceBlockSize
 	sourceBatchStride := lhsBlockCross * rhsBlockCross * sourceBlockSize
-
-	sourceData := blockSource.flat.([]float32)
-	outputData := output.flat.([]bfloat16.BFloat16)
 
 	for batch := 0; batch < batchSize; batch++ {
 		sourceBatchOffset := batch * sourceBatchStride
@@ -308,19 +313,35 @@ func dgCopyOutputBlockToFlatBFloat16(blockSource, output *Buffer) {
 				rhsStart := rhsBlock * blockDim
 				rhsEnd := min(rhsStart+blockDim, rhsCrossSize)
 				sourceBlockOffset := sourceLhsOffset + rhsBlock*sourceRhsBlockStride
-				outputBlockOffset := outputLhsOffset + rhsStart*outputRhsStride
+				outputBlockOffset := outputLhsOffset + rhsStart
 
 				// Copy valid elements from the block
+				rowLen := rhsEnd - rhsStart
 				for blockRow := 0; blockRow < lhsEnd-lhsStart; blockRow++ {
 					sourceRowOffset := sourceBlockOffset + blockRow*blockDim
 					outputRowOffset := outputBlockOffset + blockRow*outputLhsStride
-					for blockCol := range rhsEnd - rhsStart {
-						outputData[outputRowOffset+blockCol] = bfloat16.FromFloat32(sourceData[sourceRowOffset+blockCol])
-					}
+					convertRow(sourceRowOffset, outputRowOffset, rowLen)
 				}
 			}
 		}
 	}
+}
+
+// dgCopyOutputBlockToFlatBFloat16 copies the blocked output to a flat output, removing the padding.
+// The blockSource is assumed to be float32 -- matrix multiplication uses float32 to avoid
+// numeric errors when accumulating results.
+//
+// blockedSource shape: float32[batchSize, lhsCrossBlocks, rhsCrossBlocks, blockDim, blockDim]
+// output shape: bfloat16[batchSize, lhsCrossSize, rhsCrossSize]
+func dgCopyOutputBlockToFlatBFloat16(blockSource, output *Buffer) {
+	sourceData := blockSource.flat.([]float32)
+	outputData := output.flat.([]bfloat16.BFloat16)
+
+	dgCopyOutputBlockToFlatHalfPrecision(blockSource, output, func(sourceStart, outputStart, count int) {
+		for i := 0; i < count; i++ {
+			outputData[outputStart+i] = bfloat16.FromFloat32(sourceData[sourceStart+i])
+		}
+	})
 }
 
 // dgCopyOutputBlockToFlatFloat16 copies the blocked output to a flat output, removing the padding.
@@ -330,59 +351,16 @@ func dgCopyOutputBlockToFlatBFloat16(blockSource, output *Buffer) {
 // blockedSource shape: float32[batchSize, lhsCrossBlocks, rhsCrossBlocks, blockDim, blockDim]
 // output shape: float16[batchSize, lhsCrossSize, rhsCrossSize]
 func dgCopyOutputBlockToFlatFloat16(blockSource, output *Buffer) {
-	sourceDims := blockSource.shape.Dimensions
-	outputDims := output.shape.Dimensions
-
-	batchSize := sourceDims[0]
-	lhsBlockCross := sourceDims[1]
-	rhsBlockCross := sourceDims[2]
-	blockDim := sourceDims[3] // Same as sourceDims[4]
-	lhsCrossSize := outputDims[1]
-	rhsCrossSize := outputDims[2]
-
-	// Pre-calculate strides
-	outputRhsStride := 1
-	outputLhsStride := rhsCrossSize
-	outputBatchStride := lhsCrossSize * rhsCrossSize
-
-	sourceBlockSize := blockDim * blockDim
-	sourceRhsBlockStride := sourceBlockSize
-	sourceLhsBlockStride := rhsBlockCross * sourceBlockSize
-	sourceBatchStride := lhsBlockCross * rhsBlockCross * sourceBlockSize
-
 	sourceData := blockSource.flat.([]float32)
 	outputData := output.flat.([]float16.Float16)
 
-	for batch := 0; batch < batchSize; batch++ {
-		sourceBatchOffset := batch * sourceBatchStride
-		outputBatchOffset := batch * outputBatchStride
-
-		for lhsBlock := 0; lhsBlock < lhsBlockCross && lhsBlock*blockDim < lhsCrossSize; lhsBlock++ {
-			lhsStart := lhsBlock * blockDim
-			lhsEnd := min(lhsStart+blockDim, lhsCrossSize)
-			sourceLhsOffset := sourceBatchOffset + lhsBlock*sourceLhsBlockStride
-			outputLhsOffset := outputBatchOffset + lhsStart*outputLhsStride
-
-			for rhsBlock := 0; rhsBlock < rhsBlockCross && rhsBlock*blockDim < rhsCrossSize; rhsBlock++ {
-				rhsStart := rhsBlock * blockDim
-				rhsEnd := min(rhsStart+blockDim, rhsCrossSize)
-				sourceBlockOffset := sourceLhsOffset + rhsBlock*sourceRhsBlockStride
-				outputBlockOffset := outputLhsOffset + rhsStart*outputRhsStride
-
-				// Copy valid elements from the block
-				rowLen := rhsEnd - rhsStart
-				for blockRow := 0; blockRow < lhsEnd-lhsStart; blockRow++ {
-					sourceRowOffset := sourceBlockOffset + blockRow*blockDim
-					outputRowOffset := outputBlockOffset + blockRow*outputLhsStride
-					// Use the NEON-accelerated bulk converter when available
-					convertFloat32SliceToFloat16(
-						sourceData[sourceRowOffset:sourceRowOffset+rowLen],
-						outputData[outputRowOffset:outputRowOffset+rowLen],
-					)
-				}
-			}
-		}
-	}
+	dgCopyOutputBlockToFlatHalfPrecision(blockSource, output, func(sourceStart, outputStart, count int) {
+		// Use the NEON-accelerated bulk converter when available
+		convertFloat32SliceToFloat16(
+			sourceData[sourceStart:sourceStart+count],
+			outputData[outputStart:outputStart+count],
+		)
+	})
 }
 
 func execDotGeneralLarge(backend *Backend, lhs, rhs *Buffer, params *dotGeneralNodeData, output *Buffer) error {
