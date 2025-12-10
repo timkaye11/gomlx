@@ -20,11 +20,13 @@ import (
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gopjrt/dtypes"
+	"github.com/pkg/errors"
 	"github.com/x448/float16"
 )
 
 // TensorToFloat32Slice extracts tensor data as a flat float32 slice.
-// Handles conversion from various dtypes.
+// Handles conversion from Float32, Float64, and Float16 dtypes.
+// Returns an error for unsupported dtypes.
 func TensorToFloat32Slice(t *tensors.Tensor) ([]float32, error) {
 	shape := t.Shape()
 
@@ -39,7 +41,7 @@ func TensorToFloat32Slice(t *tensors.Tensor) ([]float32, error) {
 		}
 		return result, nil
 	case dtypes.Float16:
-		// Float16 is stored as uint16, need to convert
+		// Float16 is stored as uint16, need to convert.
 		data := tensors.MustCopyFlatData[uint16](t)
 		result := make([]float32, len(data))
 		for i, v := range data {
@@ -47,11 +49,13 @@ func TensorToFloat32Slice(t *tensors.Tensor) ([]float32, error) {
 		}
 		return result, nil
 	default:
-		return nil, nil
+		return nil, errors.Errorf("unsupported dtype %s for float32 conversion", shape.DType)
 	}
 }
 
 // TensorToInt32Slice extracts tensor data as a flat int32 slice.
+// Handles conversion from Int32, Int64, and Int16 dtypes.
+// Returns an error for unsupported dtypes.
 func TensorToInt32Slice(t *tensors.Tensor) ([]int32, error) {
 	shape := t.Shape()
 
@@ -73,7 +77,7 @@ func TensorToInt32Slice(t *tensors.Tensor) ([]int32, error) {
 		}
 		return result, nil
 	default:
-		return nil, nil
+		return nil, errors.Errorf("unsupported dtype %s for int32 conversion", shape.DType)
 	}
 }
 
@@ -140,21 +144,6 @@ func float16ToFloat32(h uint16) float32 {
 	return float16.Frombits(h).Float32()
 }
 
-// ConcatenateTensors concatenates tensors along the specified axis.
-// This creates a new tensor; the original tensors are not modified.
-func ConcatenateTensors(tensors []*tensors.Tensor, axis int) (*tensors.Tensor, error) {
-	if len(tensors) == 0 {
-		return nil, nil
-	}
-	if len(tensors) == 1 {
-		return tensors[0], nil
-	}
-
-	// For now, just return the first tensor.
-	// Full implementation would use graph operations.
-	return tensors[0], nil
-}
-
 // GetKVCacheShape returns the expected shape for a KV cache tensor.
 func GetKVCacheShape(batchSize, numHeads, seqLen, headDim int, dtype dtypes.DType) shapes.Shape {
 	return shapes.Make(dtype, batchSize, numHeads, seqLen, headDim)
@@ -170,17 +159,4 @@ func ValidateKVCacheShape(t *tensors.Tensor, expectedBatchSize, expectedNumHeads
 	return dims[0] == expectedBatchSize &&
 		dims[1] == expectedNumHeads &&
 		dims[3] == expectedHeadDim
-}
-
-// ExtractLastPosition extracts the last position from a sequence tensor.
-// Input shape: [batch, seq_len, ...], Output shape: [batch, 1, ...]
-func ExtractLastPosition(t *tensors.Tensor) (*tensors.Tensor, error) {
-	shape := t.Shape()
-	if shape.Rank() < 2 {
-		return t, nil
-	}
-
-	// For simple cases, this needs graph operations.
-	// For now, return the tensor as-is.
-	return t, nil
 }

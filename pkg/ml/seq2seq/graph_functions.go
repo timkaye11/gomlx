@@ -266,10 +266,3 @@ func BuildDecoderGraph(
 
 	return outputs
 }
-
-// CreateSeq2SeqModel creates a complete seq2seq model with the given configuration.
-func CreateSeq2SeqModel(backend interface{}, config *ModelConfig) (*Model, error) {
-	// This is a placeholder - actual implementation would need the backends.Backend type
-	// and would set up the executors properly.
-	return nil, nil
-}

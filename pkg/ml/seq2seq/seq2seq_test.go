@@ -342,3 +342,77 @@ func TestBatchBasics(t *testing.T) {
 		t.Error("decoder should not be initialized initially")
 	}
 }
+
+func TestExtractLogitsData(t *testing.T) {
+	t.Run("2D float32", func(t *testing.T) {
+		logits := tensors.FromFlatDataAndDimensions([]float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0}, 2, 3)
+		batchSize, vocabSize, data, err := extractLogitsData(logits)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if batchSize != 2 || vocabSize != 3 {
+			t.Errorf("expected batchSize=2, vocabSize=3, got %d, %d", batchSize, vocabSize)
+		}
+		if len(data) != 2 {
+			t.Fatalf("expected 2 batch slices, got %d", len(data))
+		}
+		// Check first batch
+		if data[0][0] != 1.0 || data[0][1] != 2.0 || data[0][2] != 3.0 {
+			t.Errorf("unexpected batch 0 data: %v", data[0])
+		}
+	})
+
+	t.Run("3D float32 last position", func(t *testing.T) {
+		// Shape: [2, 2, 3] - batch=2, seq_len=2, vocab=3
+		logits := tensors.FromFlatDataAndDimensions([]float32{
+			// batch 0, pos 0
+			1.0, 2.0, 3.0,
+			// batch 0, pos 1 (last)
+			4.0, 5.0, 6.0,
+			// batch 1, pos 0
+			7.0, 8.0, 9.0,
+			// batch 1, pos 1 (last)
+			10.0, 11.0, 12.0,
+		}, 2, 2, 3)
+		batchSize, vocabSize, data, err := extractLogitsData(logits)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if batchSize != 2 || vocabSize != 3 {
+			t.Errorf("expected batchSize=2, vocabSize=3, got %d, %d", batchSize, vocabSize)
+		}
+		// Should extract last position for each batch
+		if data[0][0] != 4.0 || data[0][1] != 5.0 || data[0][2] != 6.0 {
+			t.Errorf("expected batch 0 to be [4, 5, 6], got %v", data[0])
+		}
+		if data[1][0] != 10.0 || data[1][1] != 11.0 || data[1][2] != 12.0 {
+			t.Errorf("expected batch 1 to be [10, 11, 12], got %v", data[1])
+		}
+	})
+
+	t.Run("unsupported rank", func(t *testing.T) {
+		logits := tensors.FromFlatDataAndDimensions([]float32{1.0, 2.0, 3.0}, 3)
+		_, _, _, err := extractLogitsData(logits)
+		if err == nil {
+			t.Error("expected error for rank-1 tensor")
+		}
+	})
+}
+
+func TestTensorConversionErrors(t *testing.T) {
+	t.Run("TensorToFloat32Slice unsupported dtype", func(t *testing.T) {
+		tensor := tensors.FromFlatDataAndDimensions([]int32{1, 2, 3}, 3)
+		_, err := TensorToFloat32Slice(tensor)
+		if err == nil {
+			t.Error("expected error for int32 tensor")
+		}
+	})
+
+	t.Run("TensorToInt32Slice unsupported dtype", func(t *testing.T) {
+		tensor := tensors.FromFlatDataAndDimensions([]float32{1.0, 2.0, 3.0}, 3)
+		_, err := TensorToInt32Slice(tensor)
+		if err == nil {
+			t.Error("expected error for float32 tensor")
+		}
+	})
+}

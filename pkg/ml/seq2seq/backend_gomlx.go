@@ -23,12 +23,6 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Aliases for graph types to simplify function signatures.
-type (
-	Graph = graph.Graph
-	Node  = graph.Node
-)
-
 // runEncoderGoMLX executes the encoder using GoMLX backend.
 func (b *Batch) runEncoderGoMLX() error {
 	model := b.model
@@ -280,7 +274,7 @@ func (b *Batch) updateKVCacheFromOutputs(outputs []*tensors.Tensor) error {
 }
 
 // CreateEncoderExec creates an executor for the encoder graph function.
-func CreateEncoderExec(model *Model, graphFn func(ctx *context.Context, inputIDs, attentionMask *Node) *Node) error {
+func CreateEncoderExec(model *Model, graphFn func(ctx *context.Context, inputIDs, attentionMask *graph.Node) *graph.Node) error {
 	exec, err := context.NewExecAny(model.backend, model.ctx, graphFn)
 	if err != nil {
 		return errors.WithMessage(err, "failed to create encoder executor")

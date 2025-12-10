@@ -26,6 +26,54 @@ import (
 	"github.com/pkg/errors"
 )
 
+// indexedProb pairs a token index with its probability for sorting.
+type indexedProb struct {
+	index int
+	prob  float32
+}
+
+// extractLogitsData extracts logits tensor data as float32 slices per batch item.
+// Returns the batch size, vocab size, and a slice of float32 slices (one per batch item).
+func extractLogitsData(logits *tensors.Tensor) (batchSize, vocabSize int, batchLogits [][]float32, err error) {
+	shape := logits.Shape()
+	if shape.Rank() < 2 || shape.Rank() > 3 {
+		return 0, 0, nil, errors.Errorf("expected logits rank 2 or 3, got %d", shape.Rank())
+	}
+
+	batchSize = shape.Dimensions[0]
+	vocabSize = shape.Dimensions[shape.Rank()-1]
+
+	// Extract logits as float32 slice.
+	var logitsData []float32
+	switch shape.DType {
+	case dtypes.Float32:
+		logitsData = tensors.MustCopyFlatData[float32](logits)
+	case dtypes.Float64:
+		float64Data := tensors.MustCopyFlatData[float64](logits)
+		logitsData = make([]float32, len(float64Data))
+		for i, v := range float64Data {
+			logitsData[i] = float32(v)
+		}
+	default:
+		return 0, 0, nil, errors.Errorf("unsupported dtype for logits: %s", shape.DType)
+	}
+
+	// Split into per-batch slices, taking only the last position for 3D tensors.
+	batchLogits = make([][]float32, batchSize)
+	for batch := 0; batch < batchSize; batch++ {
+		var offset int
+		if shape.Rank() == 3 {
+			seqLen := shape.Dimensions[1]
+			offset = batch*seqLen*vocabSize + (seqLen-1)*vocabSize
+		} else {
+			offset = batch * vocabSize
+		}
+		batchLogits[batch] = logitsData[offset : offset+vocabSize]
+	}
+
+	return batchSize, vocabSize, batchLogits, nil
+}
+
 // GenerationConfig holds parameters for text generation.
 type GenerationConfig struct {
 	// MaxLength is the maximum number of tokens to generate.
@@ -221,47 +269,20 @@ func (b *Batch) Generate(config *GenerationConfig) ([][]int32, error) {
 // argmaxFromLogits extracts the argmax token ID from logits for each batch item.
 // logits shape: [batch_size, 1, vocab_size] or [batch_size, vocab_size]
 func argmaxFromLogits(logits *tensors.Tensor) ([]int32, error) {
-	shape := logits.Shape()
-	if shape.Rank() < 2 || shape.Rank() > 3 {
-		return nil, errors.Errorf("expected logits rank 2 or 3, got %d", shape.Rank())
-	}
-
-	// Get dimensions.
-	batchSize := shape.Dimensions[0]
-	vocabSize := shape.Dimensions[shape.Rank()-1]
-
-	// Extract logits as float32 slice.
-	var logitsData []float32
-	switch shape.DType {
-	case dtypes.Float32:
-		logitsData = tensors.MustCopyFlatData[float32](logits)
-	case dtypes.Float64:
-		float64Data := tensors.MustCopyFlatData[float64](logits)
-		logitsData = make([]float32, len(float64Data))
-		for i, v := range float64Data {
-			logitsData[i] = float32(v)
-		}
-	default:
-		return nil, errors.Errorf("unsupported dtype for logits: %s", shape.DType)
+	batchSize, vocabSize, batchLogits, err := extractLogitsData(logits)
+	if err != nil {
+		return nil, err
 	}
 
 	// Find argmax for each batch item.
 	tokens := make([]int32, batchSize)
 	for batch := 0; batch < batchSize; batch++ {
-		// Get the last position's logits for this batch item.
-		var offset int
-		if shape.Rank() == 3 {
-			seqLen := shape.Dimensions[1]
-			offset = batch*seqLen*vocabSize + (seqLen-1)*vocabSize
-		} else {
-			offset = batch * vocabSize
-		}
-
+		logitsSlice := batchLogits[batch]
 		maxIdx := 0
-		maxVal := logitsData[offset]
+		maxVal := logitsSlice[0]
 		for v := 1; v < vocabSize; v++ {
-			if logitsData[offset+v] > maxVal {
-				maxVal = logitsData[offset+v]
+			if logitsSlice[v] > maxVal {
+				maxVal = logitsSlice[v]
 				maxIdx = v
 			}
 		}
@@ -273,51 +294,24 @@ func argmaxFromLogits(logits *tensors.Tensor) ([]int32, error) {
 
 // sampleFromLogits samples token IDs from logits with temperature and top-p.
 func sampleFromLogits(logits *tensors.Tensor, config *GenerationConfig) ([]int32, error) {
-	shape := logits.Shape()
-	if shape.Rank() < 2 || shape.Rank() > 3 {
-		return nil, errors.Errorf("expected logits rank 2 or 3, got %d", shape.Rank())
-	}
-
-	batchSize := shape.Dimensions[0]
-	vocabSize := shape.Dimensions[shape.Rank()-1]
-
-	// Extract logits as float32 slice.
-	var logitsData []float32
-	switch shape.DType {
-	case dtypes.Float32:
-		logitsData = tensors.MustCopyFlatData[float32](logits)
-	case dtypes.Float64:
-		float64Data := tensors.MustCopyFlatData[float64](logits)
-		logitsData = make([]float32, len(float64Data))
-		for i, v := range float64Data {
-			logitsData[i] = float32(v)
-		}
-	default:
-		return nil, errors.Errorf("unsupported dtype for logits: %s", shape.DType)
+	batchSize, _, batchLogits, err := extractLogitsData(logits)
+	if err != nil {
+		return nil, err
 	}
 
 	tokens := make([]int32, batchSize)
 	for batch := 0; batch < batchSize; batch++ {
-		// Get logits for this batch item.
-		var offset int
-		if shape.Rank() == 3 {
-			seqLen := shape.Dimensions[1]
-			offset = batch*seqLen*vocabSize + (seqLen-1)*vocabSize
-		} else {
-			offset = batch * vocabSize
-		}
-
-		batchLogits := logitsData[offset : offset+vocabSize]
+		logitsSlice := batchLogits[batch]
 
 		// Apply temperature.
 		if config.Temperature != 1.0 && config.Temperature > 0 {
-			for i := range batchLogits {
-				batchLogits[i] /= float32(config.Temperature)
+			for i := range logitsSlice {
+				logitsSlice[i] /= float32(config.Temperature)
 			}
 		}
 
 		// Convert to probabilities with softmax.
-		probs := softmax(batchLogits)
+		probs := softmax(logitsSlice)
 
 		// Apply top-p (nucleus) sampling.
 		var sampledToken int
@@ -365,10 +359,6 @@ func softmax(logits []float32) []float32 {
 // sampleTopP implements nucleus (top-p) sampling.
 func sampleTopP(probs []float32, topP float32) int {
 	// Create indexed probabilities and sort by probability descending.
-	type indexedProb struct {
-		index int
-		prob  float32
-	}
 	indexed := make([]indexedProb, len(probs))
 	for i, p := range probs {
 		indexed[i] = indexedProb{i, p}
@@ -411,10 +401,6 @@ func sampleTopP(probs []float32, topP float32) int {
 
 // sampleTopK samples from the top-k most likely tokens.
 func sampleTopK(probs []float32, topK int) int {
-	type indexedProb struct {
-		index int
-		prob  float32
-	}
 	indexed := make([]indexedProb, len(probs))
 	for i, p := range probs {
 		indexed[i] = indexedProb{i, p}
