@@ -1,3 +1,11 @@
+// Copyright 2025 The GoMLX Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// This file implements the execution path for DotGeneral using pre-blocked weights.
+// Pre-blocked weights skip the runtime blocking transformation, significantly improving
+// performance for repeated matmul operations with the same weights (e.g., neural network inference).
+
 package simplego
 
 import (

@@ -1,3 +1,12 @@
+// Copyright 2025 The GoMLX Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// This file provides pre-blocked weight functionality for efficient matrix multiplication.
+// Pre-blocking converts a weight tensor to blocked format ahead of time, avoiding the
+// runtime cost of dgCopyFlatToBlockShape during matmul execution. This is particularly
+// beneficial for neural network inference where the same weights are used repeatedly.
+
 package simplego
 
 import (

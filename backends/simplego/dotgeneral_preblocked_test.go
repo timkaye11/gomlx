@@ -1,12 +1,15 @@
+// Copyright 2025 The GoMLX Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 package simplego
 
 import (
 	"testing"
 
+	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/stretchr/testify/require"
-
-	"github.com/gomlx/gomlx/pkg/core/shapes"
 )
 
 // naiveMatMul computes matrix multiplication naively for verification

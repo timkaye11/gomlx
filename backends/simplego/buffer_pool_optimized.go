@@ -1,11 +1,19 @@
+// Copyright 2025 The GoMLX Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// This file provides an optimized buffer pool using size classes.
+// Size classes reduce fragmentation and improve cache behavior by grouping
+// buffer allocations into powers of 2.
+
 package simplego
 
 import (
 	"reflect"
 	"sync"
 
-	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gopjrt/dtypes"
 )
 
 // Size class boundaries for buffer pooling.

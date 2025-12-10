@@ -1,6 +1,10 @@
+// Copyright 2025 The GoMLX Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 package simplego
 
-// Float16 DotGeneral operations
+// Float16 DotGeneral operations.
 
 import (
 	"github.com/gomlx/gomlx/pkg/core/shapes"

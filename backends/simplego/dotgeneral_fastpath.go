@@ -1,8 +1,16 @@
+// Copyright 2025 The GoMLX Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// This file provides a fast path for standard matrix multiplication patterns in DotGeneral.
+// The fast path avoids the overhead of general axis normalization when the operation
+// is a simple 2D matrix multiply with standard axis layout.
+
 package simplego
 
 import (
-	"github.com/gomlx/gopjrt/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
+	"github.com/gomlx/gopjrt/dtypes"
 )
 
 // isStandardMatmul checks if the DotGeneral operation is a standard matrix multiplication

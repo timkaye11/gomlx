@@ -1,3 +1,7 @@
+// Copyright 2025 The GoMLX Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
 //go:build noasm || !arm64
 
 package simplego
@@ -26,19 +30,6 @@ func dotProductBF16_neon_asm(a, b unsafe.Pointer, n int64) float32 {
 
 var hasFP16NEON = false
 var hasBF16NEON = false
-
-// Debug functions - stubs for non-ARM64 builds
-func dotProductBF16_debug_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32) {
-	panic("dotProductBF16_debug_asm not available on this platform")
-}
-
-func dotProductBFMLALB_only_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32) {
-	panic("dotProductBFMLALB_only_asm not available on this platform")
-}
-
-func dotProductBFMLALT_only_asm(a, b unsafe.Pointer, n int64) (lane0, lane1, lane2, lane3 float32) {
-	panic("dotProductBFMLALT_only_asm not available on this platform")
-}
 
 // execNormalizedDotGeneralFloat16ToFloat32 is the scalar fallback for FP16×FP16→FP32.
 func execNormalizedDotGeneralFloat16ToFloat32(lhs, rhs, output *Buffer, params *dotGeneralNodeData, batchStartIdx, batchEndIdx int) {
