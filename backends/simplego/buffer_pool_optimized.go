@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/gomlx/gopjrt/dtypes"
+	"github.com/gomlx/go-xla/pkg/types/dtypes"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
 )
 

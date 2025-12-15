@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/gopjrt/dtypes"
+	"github.com/gomlx/go-xla/pkg/types/dtypes"
 )
 
 func TestSoftmax(t *testing.T) {

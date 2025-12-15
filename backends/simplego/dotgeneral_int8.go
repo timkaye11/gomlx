@@ -5,7 +5,7 @@ package simplego
 import (
 	"unsafe"
 
-	"github.com/gomlx/gopjrt/dtypes"
+	"github.com/gomlx/go-xla/pkg/types/dtypes"
 )
 
 // Assembly functions for int8/uint8 dot products (defined in dotgeneral_int8_neon_arm64.s)

@@ -7,7 +7,7 @@ import (
 	"math"
 
 	"github.com/gomlx/gomlx/backends"
-	"github.com/gomlx/gopjrt/dtypes"
+	"github.com/gomlx/go-xla/pkg/types/dtypes"
 	"github.com/x448/float16"
 )
 

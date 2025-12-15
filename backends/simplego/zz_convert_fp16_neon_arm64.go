@@ -5,7 +5,7 @@ package simplego
 import (
 	"unsafe"
 
-	"github.com/gomlx/gopjrt/dtypes"
+	"github.com/gomlx/go-xla/pkg/types/dtypes"
 	"github.com/x448/float16"
 )
 
