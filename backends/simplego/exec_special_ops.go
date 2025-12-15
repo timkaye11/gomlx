@@ -6,8 +6,8 @@ import (
 	"slices"
 	"unsafe"
 
-	"github.com/gomlx/gopjrt/dtypes"
-	"github.com/gomlx/gopjrt/dtypes/bfloat16"
+	"github.com/gomlx/go-xla/pkg/types/dtypes"
+	"github.com/gomlx/go-xla/pkg/types/dtypes/bfloat16"
 	"github.com/pkg/errors"
 	"github.com/x448/float16"
 
@@ -1835,7 +1835,7 @@ func execSliceGeneric[T SupportedTypesConstraints](operand, output *Buffer, para
 	}
 }
 
-// RngBitGenerator ====================================================================================================
+// RNGBitGenerator ====================================================================================================
 
 // execRNGBitGenerator is the executor function registered for backends.OpTypeRngBitGenerator.
 func execRNGBitGenerator(backend *Backend, node *Node, inputs []*Buffer, inputsOwned []bool) ([]*Buffer, error) {
