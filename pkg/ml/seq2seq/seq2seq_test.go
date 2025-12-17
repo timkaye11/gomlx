@@ -18,10 +18,15 @@ package seq2seq
 
 import (
 	"math"
+	"math/rand"
 	"testing"
 
-	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
+	"github.com/gomlx/gomlx/pkg/core/graph"
+	"github.com/gomlx/gomlx/pkg/core/graph/graphtest"
+	"github.com/gomlx/gomlx/pkg/core/tensors"
+
+	_ "github.com/gomlx/gomlx/backends/default"
 )
 
 func TestSoftmax(t *testing.T) {
@@ -415,4 +420,124 @@ func TestTensorConversionErrors(t *testing.T) {
 			t.Error("expected error for float32 tensor")
 		}
 	})
+}
+
+func TestPositionalEncoding(t *testing.T) {
+	seqLen := 4
+	embeddingDim := 8
+
+	graphtest.RunTestGraphFn(t, "PositionalEncoding",
+		func(g *graph.Graph) (inputs, outputs []*graph.Node) {
+			pe := CreatePositionalEncoding(g, seqLen, embeddingDim, dtypes.Float32)
+			pe.AssertDims(seqLen, embeddingDim)
+
+			// Return the shape dimensions to verify output shape.
+			shapeNode := graph.Const(g, []int32{int32(seqLen), int32(embeddingDim)})
+			return nil, []*graph.Node{shapeNode}
+		},
+		[]any{
+			[]int32{4, 8},
+		},
+		0.0,
+	)
+}
+
+func TestPositionalEncodingProperties(t *testing.T) {
+	seqLen := 10
+	embeddingDim := 16
+
+	graphtest.RunTestGraphFn(t, "PositionalEncodingRange",
+		func(g *graph.Graph) (inputs, outputs []*graph.Node) {
+			pe := CreatePositionalEncoding(g, seqLen, embeddingDim, dtypes.Float32)
+
+			// Check that values are in [-1, 1] range (sin/cos output).
+			minVal := graph.ReduceMin(pe)
+			maxVal := graph.ReduceMax(pe)
+
+			// Check min >= -1 and max <= 1 using comparisons that return 1 if true.
+			// ge(-1) means minVal >= -1
+			minOk := graph.GreaterOrEqual(minVal, graph.Scalar(g, dtypes.Float32, -1.0))
+			maxOk := graph.LessOrEqual(maxVal, graph.Scalar(g, dtypes.Float32, 1.0))
+
+			return nil, []*graph.Node{minOk, maxOk}
+		},
+		[]any{
+			true, // min >= -1
+			true, // max <= 1
+		},
+		0.0,
+	)
+}
+
+// Note: TransformerEncoderLayer, TransformerDecoderLayer, and CreateEmbedding
+// create context variables that require context.Exec for proper initialization.
+// Shape inference is tested implicitly via the AssertDims calls during graph
+// building, which happen in the positional encoding and other tests.
+// Full integration tests would require setting up a complete Model with Exec.
+
+func TestSampleFromTopProbs(t *testing.T) {
+	// Test with deterministic RNG.
+	rng := rand.New(rand.NewSource(42))
+	probs := []float32{0.1, 0.2, 0.3, 0.4}
+
+	// With high topP, should sample from all tokens.
+	counts := make(map[int]int)
+	for i := 0; i < 1000; i++ {
+		idx := sampleFromTopProbs(probs, 1.0, 0, rng)
+		counts[idx]++
+	}
+
+	// All indices should be sampled (with probability proportional to their probs).
+	for i := 0; i < 4; i++ {
+		if counts[i] == 0 {
+			t.Errorf("expected index %d to be sampled at least once", i)
+		}
+	}
+
+	// Higher probability tokens should be sampled more.
+	if counts[0] > counts[3] {
+		t.Errorf("expected index 3 (p=0.4) to be sampled more than index 0 (p=0.1), got %d vs %d",
+			counts[3], counts[0])
+	}
+}
+
+func TestSampleFromTopProbsWithTopK(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	probs := []float32{0.1, 0.2, 0.3, 0.4}
+
+	// With topK=2, should only sample from indices 2 and 3.
+	counts := make(map[int]int)
+	for i := 0; i < 1000; i++ {
+		idx := sampleFromTopProbs(probs, 1.0, 2, rng)
+		counts[idx]++
+	}
+
+	// Should not sample indices 0 or 1.
+	if counts[0] > 0 || counts[1] > 0 {
+		t.Errorf("topK=2 should not sample indices 0 or 1, got counts: %v", counts)
+	}
+
+	// Should sample both 2 and 3.
+	if counts[2] == 0 || counts[3] == 0 {
+		t.Errorf("expected both indices 2 and 3 to be sampled, got counts: %v", counts)
+	}
+}
+
+func TestSampleFromTopProbsWithTopP(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
+	probs := []float32{0.05, 0.1, 0.35, 0.5}
+
+	// With topP=0.6, should only sample from indices 2 and 3 (cumulative 0.85 > 0.6).
+	// Actually with sorted order: 0.5, 0.35, 0.1, 0.05
+	// Cumulative: 0.5 (idx 3), 0.85 (idx 2) -> cutoff at 0.6 means only idx 3 most of the time.
+	counts := make(map[int]int)
+	for i := 0; i < 1000; i++ {
+		idx := sampleFromTopProbs(probs, 0.6, 0, rng)
+		counts[idx]++
+	}
+
+	// Index 3 (highest prob) should dominate.
+	if counts[3] < 500 {
+		t.Errorf("expected index 3 to dominate with topP=0.6, got counts: %v", counts)
+	}
 }

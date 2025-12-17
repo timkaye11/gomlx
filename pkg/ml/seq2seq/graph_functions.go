@@ -65,12 +65,19 @@ func TransformerEncoderLayer(ctx *context.Context, hiddenStates, attentionMask *
 
 // TransformerDecoderLayer creates a single transformer decoder layer.
 // Returns updated hidden states and optionally new KV cache tensors.
+//
+// TODO: Implement actual KV caching. Currently pastSelfK, pastSelfV, pastCrossK,
+// pastCrossV are accepted but not used. The function always returns nil for KV cache
+// outputs. This means autoregressive generation will recompute all past states.
 func TransformerDecoderLayer(
 	ctx *context.Context,
 	hiddenStates, encoderHiddenStates, encoderAttentionMask *graph.Node,
 	pastSelfK, pastSelfV, pastCrossK, pastCrossV *graph.Node,
 	config *ModelConfig,
 ) (*graph.Node, *graph.Node, *graph.Node, *graph.Node, *graph.Node) {
+	// Acknowledge unused parameters until KV caching is implemented.
+	_, _, _, _ = pastSelfK, pastSelfV, pastCrossK, pastCrossV
+
 	ctx = ctx.In("decoder_layer")
 
 	// Self-attention with causal mask
@@ -131,27 +138,43 @@ func feedForward(ctx *context.Context, x *graph.Node, config *ModelConfig) *grap
 }
 
 // CreateEmbedding creates token embeddings from input IDs.
+// Uses the context's default initializer for the embedding weights.
+// Input should be integer tensor of any shape. Output will have shape
+// [...inputShape, embeddingDim].
 func CreateEmbedding(ctx *context.Context, inputIDs *graph.Node, vocabSize, embeddingDim int) *graph.Node {
-	// Get or create embedding weights
+	inputShape := inputIDs.Shape()
+	if !inputShape.DType.IsInt() {
+		panic("can only use CreateEmbedding on integer inputs")
+	}
+
+	// Add a last dimension of size 1 if needed, since Gather needs an index dimension.
+	input := inputIDs
+	if inputShape.IsScalar() || inputShape.Dimensions[inputShape.Rank()-1] != 1 {
+		input = graph.InsertAxes(input, -1)
+	}
+
+	// Get or create embedding weights using context's initializer.
 	g := inputIDs.Graph()
-	embeddingVar := ctx.WithInitializer(nil).VariableWithShape("embeddings",
+	embeddingVar := ctx.VariableWithShape("embeddings",
 		shapes.Make(dtypes.Float32, vocabSize, embeddingDim))
 	embeddings := embeddingVar.ValueGraph(g)
 
-	// Gather embeddings for input IDs
-	return graph.Gather(embeddings, inputIDs)
+	// Gather embeddings for input IDs.
+	return graph.Gather(embeddings, input)
 }
 
-// CreatePositionalEncoding creates positional encodings.
-// Uses sinusoidal positional encoding by default.
-// Takes a reference node to get the graph.
+// CreatePositionalEncoding creates sinusoidal positional encodings.
+// Uses the standard formulation: PE(pos, 2i) = sin(pos / 10000^(2i/d)),
+// PE(pos, 2i+1) = cos(pos / 10000^(2i/d)).
 func CreatePositionalEncoding(g *graph.Graph, seqLen, embeddingDim int, dtype dtypes.DType) *graph.Node {
 	// Create position indices [0, 1, ..., seqLen-1]
 	positions := graph.IotaFull(g, shapes.Make(dtypes.Int32, seqLen))
 	positions = graph.ConvertDType(positions, dtypes.Float32)
 
-	// Create dimension indices
-	dimIndices := graph.IotaFull(g, shapes.Make(dtypes.Int32, embeddingDim))
+	// Create dimension indices for the frequency calculation.
+	// We compute frequencies for pairs of dimensions (2i), so we need embeddingDim/2 frequencies.
+	halfDim := embeddingDim / 2
+	dimIndices := graph.IotaFull(g, shapes.Make(dtypes.Int32, halfDim))
 	dimIndices = graph.ConvertDType(dimIndices, dtypes.Float32)
 
 	// Compute frequencies: 1 / (10000 ^ (2i / d))
@@ -160,16 +183,28 @@ func CreatePositionalEncoding(g *graph.Graph, seqLen, embeddingDim int, dtype dt
 	frequencies := graph.Pow(graph.ConstAs(dimScale, 10000.0), dimScale)
 	frequencies = graph.Inverse(frequencies)
 
-	// Reshape for broadcasting: positions [seqLen, 1], frequencies [1, embeddingDim]
+	// Reshape for broadcasting: positions [seqLen, 1], frequencies [1, halfDim]
 	positions = graph.Reshape(positions, seqLen, 1)
-	frequencies = graph.Reshape(frequencies, 1, embeddingDim)
+	frequencies = graph.Reshape(frequencies, 1, halfDim)
 
-	// Compute angles
+	// Compute angles: [seqLen, halfDim]
 	angles := graph.Mul(positions, frequencies)
 
-	// Apply sin to even indices and cos to odd indices
-	// For simplicity, just use sin (can be extended)
-	encodings := graph.Sin(angles)
+	// Apply sin to even indices and cos to odd indices.
+	sinEncodings := graph.Sin(angles) // [seqLen, halfDim]
+	cosEncodings := graph.Cos(angles) // [seqLen, halfDim]
+
+	// Interleave sin and cos: [sin_0, cos_0, sin_1, cos_1, ...]
+	// Stack along a new axis, then reshape.
+	// Shape after stack: [seqLen, halfDim, 2]
+	stacked := graph.Stack([]*graph.Node{sinEncodings, cosEncodings}, -1)
+	// Reshape to [seqLen, embeddingDim]
+	encodings := graph.Reshape(stacked, seqLen, halfDim*2)
+
+	// Handle odd embedding dimensions by slicing if needed.
+	if embeddingDim%2 != 0 {
+		encodings = graph.Slice(encodings, graph.AxisRange(), graph.AxisRange(0, embeddingDim))
+	}
 
 	if dtype != dtypes.Float32 {
 		encodings = graph.ConvertDType(encodings, dtype)
