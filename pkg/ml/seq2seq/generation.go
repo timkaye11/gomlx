@@ -22,18 +22,19 @@ import (
 	"sort"
 
 	"github.com/gomlx/gomlx/pkg/core/tensors"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/pkg/errors"
 )
 
-// indexedProb pairs a token index with its probability for sorting.
+// indexedProb pairs a token index with its probability.
+// Used internally for sorting tokens by probability during sampling.
 type indexedProb struct {
-	index int
-	prob  float32
+	index int     // Token index in vocabulary
+	prob  float32 // Probability of this token
 }
 
 // extractLogitsData extracts logits tensor data as float32 slices per batch item.
 // Returns the batch size, vocab size, and a slice of float32 slices (one per batch item).
+// For 3D tensors [batch, seq_len, vocab], extracts only the last position.
 func extractLogitsData(logits *tensors.Tensor) (batchSize, vocabSize int, batchLogits [][]float32, err error) {
 	shape := logits.Shape()
 	if shape.Rank() < 2 || shape.Rank() > 3 {
@@ -43,19 +44,10 @@ func extractLogitsData(logits *tensors.Tensor) (batchSize, vocabSize int, batchL
 	batchSize = shape.Dimensions[0]
 	vocabSize = shape.Dimensions[shape.Rank()-1]
 
-	// Extract logits as float32 slice.
-	var logitsData []float32
-	switch shape.DType {
-	case dtypes.Float32:
-		logitsData = tensors.MustCopyFlatData[float32](logits)
-	case dtypes.Float64:
-		float64Data := tensors.MustCopyFlatData[float64](logits)
-		logitsData = make([]float32, len(float64Data))
-		for i, v := range float64Data {
-			logitsData[i] = float32(v)
-		}
-	default:
-		return 0, 0, nil, errors.Errorf("unsupported dtype for logits: %s", shape.DType)
+	// Use TensorToFloat32Slice for dtype conversion.
+	logitsData, err := TensorToFloat32Slice(logits)
+	if err != nil {
+		return 0, 0, nil, errors.WithMessage(err, "failed to convert logits to float32")
 	}
 
 	// Split into per-batch slices, taking only the last position for 3D tensors.
@@ -117,6 +109,10 @@ type GenerationConfig struct {
 
 	// ForcedEOSTokenID if set, forces EOS at max_length.
 	ForcedEOSTokenID int32
+
+	// Rand is the random number generator for sampling. If nil, uses a default
+	// seeded from the current time. Set this for deterministic/reproducible generation.
+	Rand *rand.Rand
 }
 
 // DefaultGenerationConfig returns default generation parameters.
@@ -292,11 +288,17 @@ func argmaxFromLogits(logits *tensors.Tensor) ([]int32, error) {
 	return tokens, nil
 }
 
-// sampleFromLogits samples token IDs from logits with temperature and top-p.
+// sampleFromLogits samples token IDs from logits with temperature and top-p/top-k.
 func sampleFromLogits(logits *tensors.Tensor, config *GenerationConfig) ([]int32, error) {
 	batchSize, _, batchLogits, err := extractLogitsData(logits)
 	if err != nil {
 		return nil, err
+	}
+
+	// Use provided Rand or create a default one.
+	rng := config.Rand
+	if rng == nil {
+		rng = rand.New(rand.NewSource(rand.Int63()))
 	}
 
 	tokens := make([]int32, batchSize)
@@ -313,14 +315,14 @@ func sampleFromLogits(logits *tensors.Tensor, config *GenerationConfig) ([]int32
 		// Convert to probabilities with softmax.
 		probs := softmax(logitsSlice)
 
-		// Apply top-p (nucleus) sampling.
+		// Apply top-p (nucleus) or top-k sampling.
 		var sampledToken int
 		if config.TopP < 1.0 {
-			sampledToken = sampleTopP(probs, float32(config.TopP))
+			sampledToken = sampleFromTopProbs(probs, config.TopP, 0, rng)
 		} else if config.TopK > 0 {
-			sampledToken = sampleTopK(probs, config.TopK)
+			sampledToken = sampleFromTopProbs(probs, 1.0, config.TopK, rng)
 		} else {
-			sampledToken = sampleFromProbs(probs)
+			sampledToken = sampleWithRng(probs, rng)
 		}
 
 		tokens[batch] = int32(sampledToken)
@@ -356,8 +358,10 @@ func softmax(logits []float32) []float32 {
 	return probs
 }
 
-// sampleTopP implements nucleus (top-p) sampling.
-func sampleTopP(probs []float32, topP float32) int {
+// sampleFromTopProbs implements both top-p (nucleus) and top-k sampling in a unified way.
+// If topP < 1.0, uses nucleus sampling. If topK > 0, uses top-k sampling.
+// Both can be combined (apply top-k first, then top-p within those).
+func sampleFromTopProbs(probs []float32, topP float64, topK int, rng *rand.Rand) int {
 	// Create indexed probabilities and sort by probability descending.
 	indexed := make([]indexedProb, len(probs))
 	for i, p := range probs {
@@ -367,28 +371,36 @@ func sampleTopP(probs []float32, topP float32) int {
 		return indexed[i].prob > indexed[j].prob
 	})
 
-	// Find the smallest set of tokens with cumulative probability >= topP.
-	var cumSum float32
-	cutoff := 0
-	for i, ip := range indexed {
-		cumSum += ip.prob
-		if cumSum >= topP {
-			cutoff = i + 1
-			break
+	// Apply top-k filter if specified.
+	candidates := indexed
+	if topK > 0 && topK < len(indexed) {
+		candidates = indexed[:topK]
+	}
+
+	// Apply top-p (nucleus) filter if specified.
+	if topP < 1.0 {
+		var cumSum float32
+		cutoff := len(candidates)
+		for i, ip := range candidates {
+			cumSum += ip.prob
+			if float64(cumSum) >= topP {
+				cutoff = i + 1
+				break
+			}
 		}
+		candidates = candidates[:cutoff]
 	}
 
-	// Normalize probabilities in the nucleus.
-	nucleus := indexed[:cutoff]
-	var nucSum float32
-	for _, ip := range nucleus {
-		nucSum += ip.prob
+	// Compute sum of remaining probabilities.
+	var sum float32
+	for _, ip := range candidates {
+		sum += ip.prob
 	}
 
-	// Sample from nucleus.
-	r := rand.Float32() * nucSum
+	// Sample from candidates.
+	r := rng.Float32() * sum
 	var cumProb float32
-	for _, ip := range nucleus {
+	for _, ip := range candidates {
 		cumProb += ip.prob
 		if r <= cumProb {
 			return ip.index
@@ -396,47 +408,12 @@ func sampleTopP(probs []float32, topP float32) int {
 	}
 
 	// Fallback to most likely.
-	return nucleus[0].index
+	return candidates[0].index
 }
 
-// sampleTopK samples from the top-k most likely tokens.
-func sampleTopK(probs []float32, topK int) int {
-	indexed := make([]indexedProb, len(probs))
-	for i, p := range probs {
-		indexed[i] = indexedProb{i, p}
-	}
-	sort.Slice(indexed, func(i, j int) bool {
-		return indexed[i].prob > indexed[j].prob
-	})
-
-	// Take top-k.
-	k := topK
-	if k > len(indexed) {
-		k = len(indexed)
-	}
-	topTokens := indexed[:k]
-
-	// Normalize and sample.
-	var sum float32
-	for _, ip := range topTokens {
-		sum += ip.prob
-	}
-
-	r := rand.Float32() * sum
-	var cumProb float32
-	for _, ip := range topTokens {
-		cumProb += ip.prob
-		if r <= cumProb {
-			return ip.index
-		}
-	}
-
-	return topTokens[0].index
-}
-
-// sampleFromProbs samples a token index from a probability distribution.
-func sampleFromProbs(probs []float32) int {
-	r := rand.Float32()
+// sampleWithRng samples a token index from a probability distribution using the given RNG.
+func sampleWithRng(probs []float32, rng *rand.Rand) int {
+	r := rng.Float32()
 	var cumProb float32
 	for i, p := range probs {
 		cumProb += p
@@ -445,6 +422,24 @@ func sampleFromProbs(probs []float32) int {
 		}
 	}
 	return len(probs) - 1
+}
+
+// sampleTopP implements nucleus (top-p) sampling.
+// Deprecated: Use sampleFromTopProbs instead. Kept for backward compatibility.
+func sampleTopP(probs []float32, topP float32) int {
+	return sampleFromTopProbs(probs, float64(topP), 0, rand.New(rand.NewSource(rand.Int63())))
+}
+
+// sampleTopK samples from the top-k most likely tokens.
+// Deprecated: Use sampleFromTopProbs instead. Kept for backward compatibility.
+func sampleTopK(probs []float32, topK int) int {
+	return sampleFromTopProbs(probs, 1.0, topK, rand.New(rand.NewSource(rand.Int63())))
+}
+
+// sampleFromProbs samples a token index from a probability distribution.
+// Deprecated: Use sampleWithRng instead. Kept for backward compatibility.
+func sampleFromProbs(probs []float32) int {
+	return sampleWithRng(probs, rand.New(rand.NewSource(rand.Int63())))
 }
 
 // ApplyRepetitionPenalty modifies logits to penalize already-generated tokens.
