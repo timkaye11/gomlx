@@ -129,7 +129,7 @@ func BenchmarkDotGeneralFastPathVsNormalized(b *testing.B) {
 		}
 	})
 
-	b.Run("SmallPath", func(b *testing.B) {
+	b.Run("NormalizedPath", func(b *testing.B) {
 		output := backend.NewBuffer(outputShape)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
@@ -755,8 +755,8 @@ func BenchmarkDirectPathThreshold(b *testing.B) {
 	defer backendIface.Finalize()
 	backend := backendIface.(*Backend)
 
-	// Test various contracting sizes around the current threshold (4096)
-	// and beyond to find the optimal crossover point
+	// Test various contracting sizes around and beyond the current threshold
+	// (DirectPathMaxContractingSize = 128) to find the optimal crossover point
 	contractingSizes := []int{64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 12288, 16384}
 
 	// Fixed M and N to isolate the effect of contracting size

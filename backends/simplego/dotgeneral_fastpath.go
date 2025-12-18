@@ -143,17 +143,24 @@ func isBatchCrossContractOrder(shape shapes.Shape, contractingAxes, batchAxes []
 // the transpose overhead dominates when there's only one output row to compute.
 const DirectPathMaxContractingSize = 128
 
+// DirectPathMaxBatchSize is the maximum batch size for which the direct path is beneficial.
+// For larger batch sizes, the normalized path with batch parallelism is faster.
+// The direct path processes batches sequentially, while the normalized path can parallelize
+// across batches using multiple workers.
+const DirectPathMaxBatchSize = 64
+
 // canUseDirectPath determines if we can use the direct (no-transpose) execution path.
 //
 // The direct path skips normalization/transpose but has strided RHS access.
 // It's beneficial when:
 //  1. The dtype is float32 (currently the only optimized implementation)
 //  2. The axes are already in contract-last order for LHS
-//  3. Either:
+//  3. The batch size is small (direct path doesn't parallelize across batches)
+//  4. Either:
 //     a. Single-row operation (lhsCrossSize=1) where transpose overhead dominates, OR
 //     b. Small contracting dimension where strided access doesn't cause excessive cache misses
 //
-// For larger matrices, use execDotGeneralSmallNormalized or execDotGeneralBlocked instead.
+// For larger matrices or batch sizes, use execDotGeneralSmallNormalized or execDotGeneralBlocked instead.
 func canUseDirectPath(lhs, rhs *Buffer, params *dotGeneralNodeData) bool {
 	// Only support float32 direct path for now (most common)
 	if lhs.shape.DType != dtypes.Float32 {
@@ -167,9 +174,16 @@ func canUseDirectPath(lhs, rhs *Buffer, params *dotGeneralNodeData) bool {
 		return false
 	}
 
-	// For single-row operations (M=1), direct path is always faster because
-	// transpose overhead dominates when computing just one output row.
-	// Benchmarks show DirectPath is 10-15x faster for M=1 cases.
+	// For large batch sizes, the normalized path with batch parallelism is faster.
+	// The direct path processes batches sequentially without parallelization.
+	if params.batchSize > DirectPathMaxBatchSize {
+		return false
+	}
+
+	// For single-row operations (M=1) with small batch sizes, direct path is faster
+	// because transpose overhead dominates when computing just one output row per batch.
+	// Benchmarks show DirectPath is 10-15x faster for M=1, batchSize=1 cases.
+	// Note: Large batch sizes are handled above (parallelization wins).
 	if params.lhsCrossSize == 1 {
 		return true
 	}
@@ -228,9 +242,9 @@ func execDotGeneralSmallMatMulFloat32(backend *Backend, lhs, rhs *Buffer, params
 	rhsCrossSize := params.rhsCrossSize      // N
 	contractingSize := params.contractingSize // K
 
-	lhsBatchStride := lhsCrossSize * contractingSize  // M * K
-	rhsBatchStride := rhsCrossSize * contractingSize  // N * K (but actually K * N for [K,N])
-	outputBatchStride := lhsCrossSize * rhsCrossSize  // M * N
+	lhsBatchStride := lhsCrossSize * contractingSize  // M * K elements per batch
+	rhsBatchStride := contractingSize * rhsCrossSize  // K * N elements per batch (for [B,K,N] layout)
+	outputBatchStride := lhsCrossSize * rhsCrossSize  // M * N elements per batch
 
 	// For row-major RHS [K, N], the stride between elements in the same column is N
 	rhsColStride := rhsCrossSize // N

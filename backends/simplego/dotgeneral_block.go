@@ -77,6 +77,13 @@ func shouldPreBlock(node *Node, crossSize, contractingSize int) bool {
 		return false
 	}
 
+	// Don't pre-block small matrices where DirectPath or SmallNormalized would be faster.
+	// Pre-blocking forces us through the blocked path which has more overhead.
+	// For Float32 with small contracting dimensions, DirectPath is faster.
+	if dtype == dtypes.Float32 && contractingSize <= DirectPathMaxContractingSize {
+		return false
+	}
+
 	// Must be large enough to benefit from blocking
 	blockDim := 1 << DotGeneralTargetBlockLog2Dim[dtype]
 	if crossSize < blockDim || contractingSize < blockDim {

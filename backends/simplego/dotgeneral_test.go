@@ -716,9 +716,12 @@ func TestDotGeneral_PreBlockDeduplication(t *testing.T) {
 	builder := backend.Builder("DeDuplication Test").(*Builder)
 
 	// Create LHS inputs (activations) - different tensors
-	// Use shapes large enough to trigger pre-blocking (at least blockDim in each dimension)
+	// Use shapes large enough to trigger pre-blocking:
+	// 1. At least blockDim in each dimension
+	// 2. For Float32, contracting dimension must be > DirectPathMaxContractingSize (128)
+	//    to avoid the direct path which doesn't use blocking
 	blockDim := 1 << DotGeneralTargetBlockLog2Dim[dtypes.Float32] // typically 32
-	K := blockDim                                                 // contracting dimension
+	K := DirectPathMaxContractingSize + blockDim                  // contracting dimension (must be > threshold for Float32)
 	N := blockDim * 2                                             // output features
 
 	lhs1, err := builder.Parameter("lhs1", shapes.Make(dtypes.Float32, 4, K), nil)
