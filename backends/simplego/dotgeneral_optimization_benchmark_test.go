@@ -73,7 +73,7 @@ func BenchmarkDotGeneralMatMul(b *testing.B) {
 
 			for i := 0; i < b.N; i++ {
 				output.Zeros()
-				execDotGeneralSmallNormalizedMatMulFloat32(backend, lhs, rhs, params, output)
+				_ = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output)
 			}
 
 			// Report GFLOPS
@@ -120,12 +120,12 @@ func BenchmarkDotGeneralFastPathVsNormalized(b *testing.B) {
 		contractingSize:    K,
 	}
 
-	b.Run("FastPath", func(b *testing.B) {
+	b.Run("DirectPath", func(b *testing.B) {
 		output := backend.NewBuffer(outputShape)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			output.Zeros()
-			execDotGeneralSmallNormalizedMatMulFloat32(backend, lhs, rhs, params, output)
+			execDotGeneralSmallMatMulFloat32(backend, lhs, rhs, params, output)
 		}
 	})
 
@@ -519,9 +519,9 @@ func BenchmarkOptimizationOverhead(b *testing.B) {
 	lhsShape := shapes.Make(dtypes.Float32, 256, 256)
 	rhsShape := shapes.Make(dtypes.Float32, 256, 256)
 
-	b.Run("isStandardMatmul", func(b *testing.B) {
+	b.Run("isContractLastOrder", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			_ = isStandardMatmul(lhsShape, rhsShape, []int{1}, []int{0}, []int{}, []int{})
+			_ = isContractLastOrder(lhsShape, rhsShape, []int{1}, []int{0}, []int{}, []int{})
 		}
 	})
 
@@ -673,11 +673,23 @@ func BenchmarkPreBlockedWeights(b *testing.B) {
 					b.Skip("Pre-blocking not supported for this shape")
 				}
 
+				// Create block data for the pre-blocked RHS
+				blockData := &blockForDotGeneralData{
+					blockLog2Dim:    pbw.BlockLog2Dim,
+					blockedShape:    pbw.BlockedShape,
+					batchSize:       1, // RHS has no batch dimension
+					crossSize:       size.N,
+					contractingSize: size.K,
+					contractingAxes: []int{0}, // K is axis 0 in [K, N]
+					batchAxes:       []int{},
+				}
+
+				preBlockedBuf := pbw.GetPreBlockedBuffer()
 				output := backend.NewBuffer(outputShape)
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
 					output.Zeros()
-					_ = execDotGeneralWithPreBlockedRHS(backend, lhs, pbw, params, output)
+					_ = execDotGeneralWithGraphBlockedRHS(backend, lhs, preBlockedBuf, blockData, params, output)
 				}
 
 				flops := 2 * int64(size.M) * int64(size.K) * int64(size.N)
@@ -727,6 +739,281 @@ func BenchmarkPreBlockingOverhead(b *testing.B) {
 				blockedBytes := int64(pbw.BlockedShape.Size()) * 4
 				overhead := float64(blockedBytes-origBytes) / float64(origBytes) * 100
 				b.ReportMetric(overhead, "%_memory_overhead")
+			}
+		})
+	}
+}
+
+// BenchmarkDirectPathThreshold tests different contracting sizes to find the optimal
+// DirectPathMaxContractingSize threshold. It compares execDotGeneralSmallMatMulFloat32
+// (direct/no-transpose path with strided RHS access) vs execDotGeneralSmallNormalized
+// (transposes RHS for sequential access).
+//
+// Run with: go test -tags=benchmark -bench=BenchmarkDirectPathThreshold -benchtime=1s
+func BenchmarkDirectPathThreshold(b *testing.B) {
+	backendIface, _ := New("")
+	defer backendIface.Finalize()
+	backend := backendIface.(*Backend)
+
+	// Test various contracting sizes around the current threshold (4096)
+	// and beyond to find the optimal crossover point
+	contractingSizes := []int{64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 12288, 16384}
+
+	// Fixed M and N to isolate the effect of contracting size
+	M, N := 256, 256
+
+	for _, K := range contractingSizes {
+		b.Run(fmt.Sprintf("K%d", K), func(b *testing.B) {
+			lhsShape := shapes.Make(dtypes.Float32, M, K)
+			rhsShape := shapes.Make(dtypes.Float32, K, N)
+			outputShape := shapes.Make(dtypes.Float32, M, N)
+
+			lhs := backend.NewBuffer(lhsShape)
+			rhs := backend.NewBuffer(rhsShape)
+
+			// Fill with test data
+			lhsFlat := lhs.flat.([]float32)
+			rhsFlat := rhs.flat.([]float32)
+			for i := range lhsFlat {
+				lhsFlat[i] = float32(i%100) / 100.0
+			}
+			for i := range rhsFlat {
+				rhsFlat[i] = float32(i%100) / 100.0
+			}
+
+			params := &dotGeneralNodeData{
+				lhsContractingAxes: []int{1},
+				rhsContractingAxes: []int{0},
+				lhsBatchAxes:       []int{},
+				rhsBatchAxes:       []int{},
+				batchSize:          1,
+				lhsCrossSize:       M,
+				rhsCrossSize:       N,
+				contractingSize:    K,
+			}
+
+			// Benchmark the direct path (no transpose, strided RHS access)
+			b.Run("DirectPath", func(b *testing.B) {
+				output := backend.NewBuffer(outputShape)
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					output.Zeros()
+					execDotGeneralSmallMatMulFloat32(backend, lhs, rhs, params, output)
+				}
+				flops := 2 * int64(M) * int64(K) * int64(N)
+				gflops := float64(flops) * float64(b.N) / b.Elapsed().Seconds() / 1e9
+				b.ReportMetric(gflops, "GFLOPS")
+			})
+
+			// Benchmark the normalized path (transposes RHS for sequential access)
+			b.Run("NormalizedPath", func(b *testing.B) {
+				output := backend.NewBuffer(outputShape)
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					output.Zeros()
+					_ = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output)
+				}
+				flops := 2 * int64(M) * int64(K) * int64(N)
+				gflops := float64(flops) * float64(b.N) / b.Elapsed().Seconds() / 1e9
+				b.ReportMetric(gflops, "GFLOPS")
+			})
+		})
+	}
+}
+
+// BenchmarkDirectPathThresholdVariedShapes tests the threshold with different matrix shapes
+// to ensure the threshold works well across common ML workloads.
+func BenchmarkDirectPathThresholdVariedShapes(b *testing.B) {
+	backendIface, _ := New("")
+	defer backendIface.Finalize()
+	backend := backendIface.(*Backend)
+
+	// Common ML workload shapes
+	shapes_to_test := []struct {
+		name string
+		M, K, N int
+	}{
+		// Single row inference
+		{"SingleRow_K768", 1, 768, 768},
+		{"SingleRow_K1024", 1, 1024, 1024},
+		{"SingleRow_K2048", 1, 2048, 2048},
+		{"SingleRow_K4096", 1, 4096, 4096},
+
+		// Small batch inference
+		{"SmallBatch_K768", 32, 768, 768},
+		{"SmallBatch_K1024", 32, 1024, 1024},
+		{"SmallBatch_K2048", 32, 2048, 2048},
+		{"SmallBatch_K4096", 32, 4096, 4096},
+
+		// Square matrices around threshold
+		{"Square_256x256", 256, 256, 256},
+		{"Square_512x512", 512, 512, 512},
+		{"Square_1024x1024", 1024, 1024, 1024},
+
+		// FFN-style shapes
+		{"FFN_Up", 32, 768, 3072},
+		{"FFN_Down", 32, 3072, 768},
+	}
+
+	for _, shape := range shapes_to_test {
+		b.Run(shape.name, func(b *testing.B) {
+			lhsShape := shapes.Make(dtypes.Float32, shape.M, shape.K)
+			rhsShape := shapes.Make(dtypes.Float32, shape.K, shape.N)
+			outputShape := shapes.Make(dtypes.Float32, shape.M, shape.N)
+
+			lhs := backend.NewBuffer(lhsShape)
+			rhs := backend.NewBuffer(rhsShape)
+
+			lhsFlat := lhs.flat.([]float32)
+			rhsFlat := rhs.flat.([]float32)
+			for i := range lhsFlat {
+				lhsFlat[i] = float32(i%100) / 100.0
+			}
+			for i := range rhsFlat {
+				rhsFlat[i] = float32(i%100) / 100.0
+			}
+
+			params := &dotGeneralNodeData{
+				lhsContractingAxes: []int{1},
+				rhsContractingAxes: []int{0},
+				lhsBatchAxes:       []int{},
+				rhsBatchAxes:       []int{},
+				batchSize:          1,
+				lhsCrossSize:       shape.M,
+				rhsCrossSize:       shape.N,
+				contractingSize:    shape.K,
+			}
+
+			b.Run("DirectPath", func(b *testing.B) {
+				output := backend.NewBuffer(outputShape)
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					output.Zeros()
+					execDotGeneralSmallMatMulFloat32(backend, lhs, rhs, params, output)
+				}
+				flops := 2 * int64(shape.M) * int64(shape.K) * int64(shape.N)
+				gflops := float64(flops) * float64(b.N) / b.Elapsed().Seconds() / 1e9
+				b.ReportMetric(gflops, "GFLOPS")
+			})
+
+			b.Run("NormalizedPath", func(b *testing.B) {
+				output := backend.NewBuffer(outputShape)
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					output.Zeros()
+					_ = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output)
+				}
+				flops := 2 * int64(shape.M) * int64(shape.K) * int64(shape.N)
+				gflops := float64(flops) * float64(b.N) / b.Elapsed().Seconds() / 1e9
+				b.ReportMetric(gflops, "GFLOPS")
+			})
+		})
+	}
+}
+
+// BenchmarkPreBlockingThreshold tests when pre-blocking becomes beneficial
+// compared to on-the-fly blocking in execDotGeneralBlocked.
+func BenchmarkPreBlockingThreshold(b *testing.B) {
+	backendIface, _ := New("")
+	defer backendIface.Finalize()
+	backend := backendIface.(*Backend)
+
+	// Typical weight matrix sizes
+	shapes_to_test := []struct {
+		name string
+		K, N int
+	}{
+		{"384x384", 384, 384},
+		{"768x768", 768, 768},
+		{"768x3072", 768, 3072},
+		{"1024x1024", 1024, 1024},
+		{"2048x2048", 2048, 2048},
+		{"4096x4096", 4096, 4096},
+	}
+
+	M := 32 // Batch size for activations
+
+	for _, shape := range shapes_to_test {
+		b.Run(shape.name, func(b *testing.B) {
+			// For blocked path, we need rank 3 shapes [batch, cross, contract]
+			lhsShape := shapes.Make(dtypes.Float32, 1, M, shape.K)
+			rhsShape := shapes.Make(dtypes.Float32, 1, shape.K, shape.N)
+			outputShape := shapes.Make(dtypes.Float32, 1, M, shape.N)
+
+			lhs := backend.NewBuffer(lhsShape)
+			rhs := backend.NewBuffer(rhsShape)
+
+			lhsFlat := lhs.flat.([]float32)
+			rhsFlat := rhs.flat.([]float32)
+			for i := range lhsFlat {
+				lhsFlat[i] = float32(i%100) / 100.0
+			}
+			for i := range rhsFlat {
+				rhsFlat[i] = float32(i%100) / 100.0
+			}
+
+			params := &dotGeneralNodeData{
+				lhsContractingAxes: []int{2},
+				rhsContractingAxes: []int{1},
+				lhsBatchAxes:       []int{0},
+				rhsBatchAxes:       []int{0},
+				batchSize:          1,
+				lhsCrossSize:       M,
+				rhsCrossSize:       shape.N,
+				contractingSize:    shape.K,
+			}
+
+			// Set up blocked shapes for blocked path
+			blockLog2Dim := DotGeneralTargetBlockLog2Dim[dtypes.Float32]
+			params.lhsBlockedShape = dgCreateBlockedShape(dtypes.Float32, params.batchSize, params.lhsCrossSize, params.contractingSize, blockLog2Dim)
+			params.rhsBlockedShape = dgCreateBlockedShape(dtypes.Float32, params.batchSize, params.rhsCrossSize, params.contractingSize, blockLog2Dim)
+			params.outputBlockedShape = dgCreateBlockedShape(dtypes.Float32, params.batchSize, params.lhsCrossSize, params.rhsCrossSize, blockLog2Dim)
+
+			b.Run("OnTheFlyBlocking", func(b *testing.B) {
+				output := backend.NewBuffer(outputShape)
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					output.Zeros()
+					_ = execDotGeneralBlocked(backend, lhs, rhs, params, output)
+				}
+				flops := 2 * int64(M) * int64(shape.K) * int64(shape.N)
+				gflops := float64(flops) * float64(b.N) / b.Elapsed().Seconds() / 1e9
+				b.ReportMetric(gflops, "GFLOPS")
+			})
+
+			// Pre-block the RHS weight matrix
+			rhsRank2Shape := shapes.Make(dtypes.Float32, shape.K, shape.N)
+			rhsRank2 := backend.NewBuffer(rhsRank2Shape)
+			rhsRank2Flat := rhsRank2.flat.([]float32)
+			for i := range rhsRank2Flat {
+				rhsRank2Flat[i] = float32(i%100) / 100.0
+			}
+
+			pbw := PreBlockWeightForMatMul(rhsRank2)
+			if pbw != nil {
+				b.Run("PreBlocked", func(b *testing.B) {
+					// Create block data for the pre-blocked RHS
+					blockData := &blockForDotGeneralData{
+						blockLog2Dim:    pbw.BlockLog2Dim,
+						blockedShape:    pbw.BlockedShape,
+						batchSize:       1, // RHS has no batch dimension
+						crossSize:       shape.N,
+						contractingSize: shape.K,
+						contractingAxes: []int{0}, // K is axis 0 in [K, N]
+						batchAxes:       []int{},
+					}
+
+					preBlockedBuf := pbw.GetPreBlockedBuffer()
+					output := backend.NewBuffer(outputShape)
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						output.Zeros()
+						_ = execDotGeneralWithGraphBlockedRHS(backend, lhs, preBlockedBuf, blockData, params, output)
+					}
+					flops := 2 * int64(M) * int64(shape.K) * int64(shape.N)
+					gflops := float64(flops) * float64(b.N) / b.Elapsed().Seconds() / 1e9
+					b.ReportMetric(gflops, "GFLOPS")
+				})
 			}
 		})
 	}

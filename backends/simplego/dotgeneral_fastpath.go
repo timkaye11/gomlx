@@ -135,17 +135,23 @@ func isBatchCrossContractOrder(shape shapes.Shape, contractingAxes, batchAxes []
 // access pattern causes too many cache misses, and the normalized path (which
 // transposes RHS for sequential access) becomes faster despite the transpose overhead.
 //
-// This threshold was chosen based on typical L1 cache sizes (32-64KB) and cache line
-// sizes (64 bytes). For float32, this allows ~4K elements which fits comfortably in L1.
-const DirectPathMaxContractingSize = 4096
+// This threshold was determined by benchmarking (BenchmarkDirectPathThreshold):
+//   - For [256, K] × [K, 256]: DirectPath wins at K≤128, NormalizedPath wins at K≥256
+//   - Crossover point is between K=128 and K=256
+//
+// Exception: For single-row operations (M=1), DirectPath is always faster because
+// the transpose overhead dominates when there's only one output row to compute.
+const DirectPathMaxContractingSize = 128
 
 // canUseDirectPath determines if we can use the direct (no-transpose) execution path.
 //
 // The direct path skips normalization/transpose but has strided RHS access.
-// It's only beneficial when:
+// It's beneficial when:
 //  1. The dtype is float32 (currently the only optimized implementation)
 //  2. The axes are already in contract-last order for LHS
-//  3. The matrix is small enough that strided access doesn't cause excessive cache misses
+//  3. Either:
+//     a. Single-row operation (lhsCrossSize=1) where transpose overhead dominates, OR
+//     b. Small contracting dimension where strided access doesn't cause excessive cache misses
 //
 // For larger matrices, use execDotGeneralSmallNormalized or execDotGeneralBlocked instead.
 func canUseDirectPath(lhs, rhs *Buffer, params *dotGeneralNodeData) bool {
@@ -161,9 +167,15 @@ func canUseDirectPath(lhs, rhs *Buffer, params *dotGeneralNodeData) bool {
 		return false
 	}
 
-	// Only use direct path for small matrices where strided RHS access
-	// doesn't cause excessive cache misses. For larger matrices, the
-	// normalized path (with transpose) is faster despite the transpose cost.
+	// For single-row operations (M=1), direct path is always faster because
+	// transpose overhead dominates when computing just one output row.
+	// Benchmarks show DirectPath is 10-15x faster for M=1 cases.
+	if params.lhsCrossSize == 1 {
+		return true
+	}
+
+	// For multi-row operations, only use direct path when contracting dimension
+	// is small enough that strided RHS access doesn't cause excessive cache misses.
 	if params.contractingSize > DirectPathMaxContractingSize {
 		return false
 	}
