@@ -171,17 +171,32 @@ func (b *Builder) DotGeneral(lhsOp backends.Op, lhsContractingAxes, lhsBatchAxes
 	}
 	params.outputBlockedShape = dgCreateBlockedShape(accumulatorDType, params.batchSize, params.lhsCrossSize, params.rhsCrossSize, blockLog2Dim)
 
+	// Check if LHS should be pre-blocked for efficient execution.
+	// Pre-blocking is beneficial for constant/parameter tensors that are reused.
+	// The blocking node will be de-duplicated if the same input is used in multiple DotGenerals.
+	lhsInput := lhs
+	if shouldPreBlock(lhs, params.lhsCrossSize, params.contractingSize) {
+		lhsInput = b.getOrCreateBlockedInputGeneral(lhs,
+			params.lhsContractingAxes, params.lhsBatchAxes,
+			params.batchSize, params.lhsCrossSize, params.contractingSize)
+	}
+
 	// Check if RHS should be pre-blocked for efficient execution.
 	// Pre-blocking is beneficial for 2D weights [K, N] that are reused across batches.
 	// The blocking node will be de-duplicated if the same RHS is used in multiple DotGenerals.
 	rhsInput := rhs
 	if shouldPreBlockRHS(rhs, params.lhsContractingAxes, params.rhsContractingAxes, params.rhsBatchAxes) {
 		rhsInput = b.getOrCreateBlockedInput(rhs)
+	} else if shouldPreBlock(rhs, params.rhsCrossSize, params.contractingSize) {
+		// Generalized pre-blocking for non-2D RHS or non-standard layouts
+		rhsInput = b.getOrCreateBlockedInputGeneral(rhs,
+			params.rhsContractingAxes, params.rhsBatchAxes,
+			params.batchSize, params.rhsCrossSize, params.contractingSize)
 	}
 
 	// Create dot-general node: it will generate a normalized output [batchSize, lhsCrossSize, rhsCrossSize].
 	// Use nodeOutputDType for output shape (same as input dtype for float types, int32 for int8/uint8).
-	dotGeneral := b.newNode(backends.OpTypeDotGeneral, shapes.Make(nodeOutputDType, params.batchSize, params.lhsCrossSize, params.rhsCrossSize), lhs, rhsInput)
+	dotGeneral := b.newNode(backends.OpTypeDotGeneral, shapes.Make(nodeOutputDType, params.batchSize, params.lhsCrossSize, params.rhsCrossSize), lhsInput, rhsInput)
 	dotGeneral.data = &params
 
 	// Reshape result to recover batch and cross dimensions.
@@ -248,10 +263,12 @@ const (
 // execDotGeneral executes the DotGeneral operation, selecting the optimal execution path.
 //
 // Execution paths (in order of preference):
-//  1. Pre-blocked RHS: If RHS was blocked at graph build time, use the blocked data directly
-//  2. Direct path: For small matrices in contract-last order, skip transpose (see execDotGeneralDirect)
-//  3. Normalized path: Transpose to [B,Cross,Contract] form (see execDotGeneralNormalized)
-//  4. Blocked path: Cache-tiled algorithm for large matrices (see execDotGeneralBlocked)
+//  1. Both LHS and RHS pre-blocked: Most efficient path, both inputs already in blocked format
+//  2. Pre-blocked LHS only: LHS is pre-blocked, RHS needs blocking at runtime
+//  3. Pre-blocked RHS only: RHS is pre-blocked, LHS needs blocking at runtime
+//  4. Direct path: For small matrices in contract-last order, skip transpose (see execDotGeneralDirect)
+//  5. Normalized path: Transpose to [B,Cross,Contract] form (see execDotGeneralNormalized)
+//  6. Blocked path: Cache-tiled algorithm for large matrices (see execDotGeneralBlocked)
 func execDotGeneral(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*Buffer, error) {
 	lhs, rhs := inputs[0], inputs[1]
 	params := node.data.(*dotGeneralNodeData)
@@ -260,10 +277,35 @@ func execDotGeneral(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*
 	output := backend.getBufferForShape(outputShape)
 	output.Zeros()
 
-	// Check if RHS was pre-blocked at graph build time (via BlockForDotGeneral node).
-	// If so, the rhs buffer already contains blocked data and we can skip the blocking step.
+	// Check if inputs were pre-blocked at graph build time (via BlockForDotGeneral node).
+	lhsNode := node.inputs[0]
 	rhsNode := node.inputs[1]
-	if rhsNode.opType == backends.OpTypeBlockForDotGeneral {
+	lhsBlocked := lhsNode.opType == backends.OpTypeBlockForDotGeneral
+	rhsBlocked := rhsNode.opType == backends.OpTypeBlockForDotGeneral
+
+	// Handle pre-blocked cases
+	switch {
+	case lhsBlocked && rhsBlocked:
+		// Both inputs are pre-blocked - most efficient path
+		lhsBlockData := lhsNode.data.(*blockForDotGeneralData)
+		rhsBlockData := rhsNode.data.(*blockForDotGeneralData)
+		if err := execDotGeneralWithBothBlocked(backend, lhs, rhs, lhsBlockData, rhsBlockData, params, output); err != nil {
+			backend.putBuffer(output)
+			return nil, err
+		}
+		return output, nil
+
+	case lhsBlocked:
+		// Only LHS is pre-blocked
+		lhsBlockData := lhsNode.data.(*blockForDotGeneralData)
+		if err := execDotGeneralWithGraphBlockedLHS(backend, lhs, rhs, lhsBlockData, params, output); err != nil {
+			backend.putBuffer(output)
+			return nil, err
+		}
+		return output, nil
+
+	case rhsBlocked:
+		// Only RHS is pre-blocked
 		blockData := rhsNode.data.(*blockForDotGeneralData)
 		if err := execDotGeneralWithGraphBlockedRHS(backend, lhs, rhs, blockData, params, output); err != nil {
 			backend.putBuffer(output)
@@ -271,6 +313,8 @@ func execDotGeneral(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*
 		}
 		return output, nil
 	}
+
+	// Neither input is pre-blocked, try other execution paths
 
 	// Try the direct path for small matrices in contract-last order.
 	// This skips transpose but has strided RHS access, so only beneficial for small matrices.
