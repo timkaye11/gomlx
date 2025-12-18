@@ -28,7 +28,7 @@ import (
 //   3. Batched MatMul: [B, M, K] × [B, K, N] → [B, M, N] (contract on lhs axis 2, rhs axis 1)
 //   4. Multi-batch: [B1, B2, M, K] × [B1, B2, K, N] → [B1, B2, M, N]
 //
-// See also: execDotGeneralNormalized which transposes to [Batch, Cross, Contract] form
+// See also: execDotGeneralSmallNormalized which transposes to [Batch, Cross, Contract] form
 // where BOTH operands have the contracting dimension last (sequential access for both).
 func isContractLastOrder(lhsShape, rhsShape shapes.Shape, lhsContractingAxes, rhsContractingAxes, lhsBatchAxes, rhsBatchAxes []int) bool {
 	lhsRank := lhsShape.Rank()
@@ -147,7 +147,7 @@ const DirectPathMaxContractingSize = 4096
 //  2. The axes are already in contract-last order for LHS
 //  3. The matrix is small enough that strided access doesn't cause excessive cache misses
 //
-// For larger matrices, use execDotGeneralNormalized or execDotGeneralBlocked instead.
+// For larger matrices, use execDotGeneralSmallNormalized or execDotGeneralBlocked instead.
 func canUseDirectPath(lhs, rhs *Buffer, params *dotGeneralNodeData) bool {
 	// Only support float32 direct path for now (most common)
 	if lhs.shape.DType != dtypes.Float32 {
@@ -171,24 +171,24 @@ func canUseDirectPath(lhs, rhs *Buffer, params *dotGeneralNodeData) bool {
 	return true
 }
 
-// execDotGeneralDirect executes matrix multiplication directly without transpose/normalization.
+// execDotGeneralSmallMatMul executes matrix multiplication directly without transpose/normalization.
 //
 // This path is optimal for SMALL matrices where the transpose overhead exceeds the
-// cache miss penalty from strided RHS access. For large matrices, use execDotGeneralNormalized
+// cache miss penalty from strided RHS access. For large matrices, use execDotGeneralSmallNormalized
 // or execDotGeneralBlocked instead.
 //
 // Returns true if direct path was used, false if caller should use another path.
-func execDotGeneralDirect(backend *Backend, lhs, rhs *Buffer, params *dotGeneralNodeData, output *Buffer) bool {
+func execDotGeneralSmallMatMul(backend *Backend, lhs, rhs *Buffer, params *dotGeneralNodeData, output *Buffer) bool {
 	if !canUseDirectPath(lhs, rhs, params) {
 		return false
 	}
 
 	// Execute the optimized float32 path
-	execDotGeneralDirectFloat32(backend, lhs, rhs, params, output)
+	execDotGeneralSmallMatMulFloat32(backend, lhs, rhs, params, output)
 	return true
 }
 
-// execDotGeneralDirectFloat32 executes float32 matrix multiplication without transpose.
+// execDotGeneralSmallMatMulFloat32 executes float32 matrix multiplication without transpose.
 //
 // Memory layout for row-major tensors [M, K] × [K, N] → [M, N]:
 //
@@ -204,9 +204,9 @@ func execDotGeneralDirect(backend *Backend, lhs, rhs *Buffer, params *dotGeneral
 // each RHS element access may cause a cache miss. This is why we limit this path
 // to small matrices (see DirectPathMaxContractingSize).
 //
-// For large matrices, execDotGeneralNormalized transposes RHS to [N, K] form where
+// For large matrices, execDotGeneralSmallNormalized transposes RHS to [N, K] form where
 // "row" n (the original column) becomes contiguous, enabling efficient vectorization.
-func execDotGeneralDirectFloat32(backend *Backend, lhs, rhs *Buffer, params *dotGeneralNodeData, output *Buffer) {
+func execDotGeneralSmallMatMulFloat32(backend *Backend, lhs, rhs *Buffer, params *dotGeneralNodeData, output *Buffer) {
 	lhsFlat := lhs.flat.([]float32)
 	rhsFlat := rhs.flat.([]float32)
 	outputFlat := output.flat.([]float32)

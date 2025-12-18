@@ -73,7 +73,7 @@ func BenchmarkDotGeneralMatMul(b *testing.B) {
 
 			for i := 0; i < b.N; i++ {
 				output.Zeros()
-				execDotGeneralFastPathFloat32(backend, lhs, rhs, params, output)
+				execDotGeneralSmallNormalizedMatMulFloat32(backend, lhs, rhs, params, output)
 			}
 
 			// Report GFLOPS
@@ -125,7 +125,7 @@ func BenchmarkDotGeneralFastPathVsNormalized(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			output.Zeros()
-			execDotGeneralFastPathFloat32(backend, lhs, rhs, params, output)
+			execDotGeneralSmallNormalizedMatMulFloat32(backend, lhs, rhs, params, output)
 		}
 	})
 
@@ -134,7 +134,7 @@ func BenchmarkDotGeneralFastPathVsNormalized(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			output.Zeros()
-			_ = execDotGeneralSmall(backend, lhs, rhs, params, output)
+			_ = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output)
 		}
 	})
 }
@@ -256,7 +256,7 @@ func BenchmarkBatchedMatMul(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				output.Zeros()
-				_ = execDotGeneralSmall(backend, lhs, rhs, params, output)
+				_ = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output)
 			}
 
 			flops := 2 * int64(batchSize) * int64(M) * int64(K) * int64(N)
@@ -320,7 +320,7 @@ func BenchmarkFP16Operations(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				output.Zeros()
-				_ = execDotGeneralSmall(backend, lhs, rhs, params, output)
+				_ = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output)
 			}
 
 			flops := 2 * int64(M) * int64(K) * int64(N)
@@ -384,7 +384,7 @@ func BenchmarkBF16Operations(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				output.Zeros()
-				_ = execDotGeneralSmall(backend, lhs, rhs, params, output)
+				_ = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output)
 			}
 
 			flops := 2 * int64(M) * int64(K) * int64(N)
@@ -444,7 +444,7 @@ func BenchmarkF32Operations(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				output.Zeros()
-				_ = execDotGeneralSmall(backend, lhs, rhs, params, output)
+				_ = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output)
 			}
 
 			flops := 2 * int64(M) * int64(K) * int64(N)

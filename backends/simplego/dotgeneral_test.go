@@ -613,7 +613,7 @@ func TestDotGeneral_NonSquareMatrices(t *testing.T) {
 
 	// Execute via direct path (if applicable) or blocked path
 	if canUseDirectPath(lhs, rhs, params) {
-		execDotGeneralDirectFloat32(be, lhs, rhs, params, output)
+		execDotGeneralSmallMatMulFloat32(be, lhs, rhs, params, output)
 	} else {
 		// Use blocked path
 		execDotGeneralBlocked(be, lhs, rhs, params, output)
@@ -690,7 +690,7 @@ func TestDotGeneral_NonSquareLarger(t *testing.T) {
 
 	// Execute via direct path (if applicable) or blocked path
 	if canUseDirectPath(lhs, rhs, params) {
-		execDotGeneralDirectFloat32(be, lhs, rhs, params, output)
+		execDotGeneralSmallMatMulFloat32(be, lhs, rhs, params, output)
 	} else {
 		execDotGeneralBlocked(be, lhs, rhs, params, output)
 	}

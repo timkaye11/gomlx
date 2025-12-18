@@ -252,7 +252,7 @@ type dotGeneralExecutionPath int
 const (
 	// autoSelectPath lets execDotGeneral choose based on matrix size
 	autoSelectPath dotGeneralExecutionPath = iota
-	// normalizedPath forces use of execDotGeneralNormalized (transpose to [B,Cross,Contract])
+	// normalizedPath forces use of execDotGeneralSmallNormalized (transpose to [B,Cross,Contract])
 	normalizedPath
 	// blockedPath forces use of execDotGeneralBlocked (cache-tiled algorithm)
 	blockedPath
@@ -266,8 +266,8 @@ const (
 //  1. Both LHS and RHS pre-blocked: Most efficient path, both inputs already in blocked format
 //  2. Pre-blocked LHS only: LHS is pre-blocked, RHS needs blocking at runtime
 //  3. Pre-blocked RHS only: RHS is pre-blocked, LHS needs blocking at runtime
-//  4. Direct path: For small matrices in contract-last order, skip transpose (see execDotGeneralDirect)
-//  5. Normalized path: Transpose to [B,Cross,Contract] form (see execDotGeneralNormalized)
+//  4. SmallMatMul path: For small matrices in contract-last order, skip transpose (see execDotGeneralSmallMatMul)
+//  5. Normalized path: Transpose to [B,Cross,Contract] form (see execDotGeneralSmallNormalized)
 //  6. Blocked path: Cache-tiled algorithm for large matrices (see execDotGeneralBlocked)
 func execDotGeneral(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*Buffer, error) {
 	lhs, rhs := inputs[0], inputs[1]
@@ -318,7 +318,7 @@ func execDotGeneral(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*
 
 	// Try the direct path for small matrices in contract-last order.
 	// This skips transpose but has strided RHS access, so only beneficial for small matrices.
-	if execDotGeneralDirect(backend, lhs, rhs, params, output) {
+	if execDotGeneralSmallMatMul(backend, lhs, rhs, params, output) {
 		return output, nil
 	}
 
@@ -340,11 +340,11 @@ func execDotGeneral(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*
 	case blockedPath:
 		err = execDotGeneralBlocked(backend, lhs, rhs, params, output)
 	case normalizedPath:
-		err = execDotGeneralNormalized(backend, lhs, rhs, params, output)
+		err = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output)
 	case checkPath:
 		output2 := backend.getBufferForShape(outputShape)
 		output2.Zeros()
-		err = execDotGeneralNormalized(backend, lhs, rhs, params, output2)
+		err = execDotGeneralSmallNormalized(backend, lhs, rhs, params, output2)
 		if err != nil {
 			return nil, err
 		}

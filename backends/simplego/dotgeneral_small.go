@@ -140,7 +140,7 @@ func dgNormalizeShape[T interface {
 	return
 }
 
-// execDotGeneralNormalized executes DotGeneral by first transposing operands to normalized form.
+// execDotGeneralSmallNormalized executes DotGeneral by first transposing operands to normalized form.
 //
 // The normalized form is [Batch, Cross, Contract] where:
 //   - Batch dimensions come first
@@ -163,7 +163,7 @@ func dgNormalizeShape[T interface {
 //   - int8/uint8 quantized operations with int32 accumulation
 //   - float16/bfloat16 with float32 accumulation for precision
 //   - Batch parallelism across workers
-func execDotGeneralNormalized(backend *Backend, lhs, rhs *Buffer, params *dotGeneralNodeData, output *Buffer) error {
+func execDotGeneralSmallNormalized(backend *Backend, lhs, rhs *Buffer, params *dotGeneralNodeData, output *Buffer) error {
 	dtype := lhs.shape.DType
 	normalizeFn := dotGeneralNormalizeShapeDTypeMap.Get(dtype).(func(backend *Backend, source *Buffer, contractingAxes, batchAxes []int, batchSize, crossSize, contractingSize int) *Buffer)
 
