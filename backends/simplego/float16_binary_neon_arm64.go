@@ -2,15 +2,15 @@
 
 package simplego
 
-// This file must come alphabetically after z_float16_binary.go to ensure its init() runs later.
-// It overrides the scalar FP16 binary operations with NEON-accelerated versions.
+// NEON-accelerated Float16 binary operations for ARM64.
+// These override the scalar implementations in float16_binary.go using priorityArch.
 
 import (
 	"math"
 
 	"github.com/gomlx/gomlx/backends"
-	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/x448/float16"
 )
 
@@ -76,28 +76,29 @@ func execBinaryFloat16Scalar(opFn func(a, b float32) float32, lhs, rhs []float16
 }
 
 func init() {
-	// Override the Float16 binary ops with NEON-accelerated versions
-	// opType: 0=add, 1=mul, 2=sub, 3=div
+	// Register NEON-accelerated Float16 binary ops with priorityArch.
+	// This overrides the scalar implementations in float16_binary.go.
+	// opType: 0=add, 1=mul, 2=sub, 3=div, -1=scalar fallback
 
-	nodeExecutors[backends.OpTypeAdd] = makeFloat16BinaryWrapperNEON(origExecAdd, 0, func(a, b float32) float32 { return a + b })
-	nodeExecutors[backends.OpTypeSub] = makeFloat16BinaryWrapperNEON(origExecSub, 2, func(a, b float32) float32 { return a - b })
-	nodeExecutors[backends.OpTypeMul] = makeFloat16BinaryWrapperNEON(origExecMul, 1, func(a, b float32) float32 { return a * b })
-	nodeExecutors[backends.OpTypeDiv] = makeFloat16BinaryWrapperNEON(origExecDiv, 3, func(a, b float32) float32 { return a / b })
+	setNodeExecutor(backends.OpTypeAdd, priorityArch, makeFloat16BinaryWrapperNEON(execAdd, 0, func(a, b float32) float32 { return a + b }))
+	setNodeExecutor(backends.OpTypeSub, priorityArch, makeFloat16BinaryWrapperNEON(execSub, 2, func(a, b float32) float32 { return a - b }))
+	setNodeExecutor(backends.OpTypeMul, priorityArch, makeFloat16BinaryWrapperNEON(execMul, 1, func(a, b float32) float32 { return a * b }))
+	setNodeExecutor(backends.OpTypeDiv, priorityArch, makeFloat16BinaryWrapperNEON(execDiv, 3, func(a, b float32) float32 { return a / b }))
 
 	// Max, Min, Pow still use scalar fallback (opType=-1)
-	nodeExecutors[backends.OpTypeMax] = makeFloat16BinaryWrapperNEON(origExecMax, -1, func(a, b float32) float32 {
+	setNodeExecutor(backends.OpTypeMax, priorityArch, makeFloat16BinaryWrapperNEON(execMax, -1, func(a, b float32) float32 {
 		if a > b {
 			return a
 		}
 		return b
-	})
-	nodeExecutors[backends.OpTypeMin] = makeFloat16BinaryWrapperNEON(origExecMin, -1, func(a, b float32) float32 {
+	}))
+	setNodeExecutor(backends.OpTypeMin, priorityArch, makeFloat16BinaryWrapperNEON(execMin, -1, func(a, b float32) float32 {
 		if a < b {
 			return a
 		}
 		return b
-	})
-	nodeExecutors[backends.OpTypePow] = makeFloat16BinaryWrapperNEON(origExecPow, -1, func(a, b float32) float32 {
+	}))
+	setNodeExecutor(backends.OpTypePow, priorityArch, makeFloat16BinaryWrapperNEON(execPow, -1, func(a, b float32) float32 {
 		return float32(math.Pow(float64(a), float64(b)))
-	})
+	}))
 }

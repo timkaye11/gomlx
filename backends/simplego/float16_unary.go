@@ -1,7 +1,7 @@
 package simplego
 
-// This file must come alphabetically after exec_unary.go to ensure its init() runs later.
-// It adds Float16 support to unary operations.
+// Float16 unary operations support.
+// These wrap the generic unary executors to handle Float16 dtype.
 
 import (
 	"math"
@@ -137,27 +137,6 @@ func execErfF16(inputs, outputs []float16.Float16) {
 	}
 }
 
-// Store original executors
-var (
-	origExecNeg      func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecAbs      func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecSign     func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecExp      func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecExpm1    func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecLog      func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecLog1p    func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecCeil     func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecFloor    func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecRound    func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecRsqrt    func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecCos      func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecSin      func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecTanh     func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecLogistic func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecIsFinite func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecErf      func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-)
-
 func makeFloat16UnaryWrapper(
 	origExec func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error),
 	opFn func(inputs, outputs []float16.Float16),
@@ -173,52 +152,34 @@ func makeFloat16UnaryWrapper(
 }
 
 func init() {
-	// Save original executors
-	origExecNeg = nodeExecutors[backends.OpTypeNeg]
-	origExecAbs = nodeExecutors[backends.OpTypeAbs]
-	origExecSign = nodeExecutors[backends.OpTypeSign]
-	origExecExp = nodeExecutors[backends.OpTypeExp]
-	origExecExpm1 = nodeExecutors[backends.OpTypeExpm1]
-	origExecLog = nodeExecutors[backends.OpTypeLog]
-	origExecLog1p = nodeExecutors[backends.OpTypeLog1p]
-	origExecCeil = nodeExecutors[backends.OpTypeCeil]
-	origExecFloor = nodeExecutors[backends.OpTypeFloor]
-	origExecRound = nodeExecutors[backends.OpTypeRound]
-	origExecRsqrt = nodeExecutors[backends.OpTypeRsqrt]
-	origExecCos = nodeExecutors[backends.OpTypeCos]
-	origExecSin = nodeExecutors[backends.OpTypeSin]
-	origExecTanh = nodeExecutors[backends.OpTypeTanh]
-	origExecLogistic = nodeExecutors[backends.OpTypeLogistic]
-	origExecIsFinite = nodeExecutors[backends.OpTypeIsFinite]
-	origExecErf = nodeExecutors[backends.OpTypeErf]
-
-	// Wrap with Float16 support
-	nodeExecutors[backends.OpTypeNeg] = makeFloat16UnaryWrapper(origExecNeg, execNegF16)
-	nodeExecutors[backends.OpTypeAbs] = makeFloat16UnaryWrapper(origExecAbs, execAbsF16)
-	nodeExecutors[backends.OpTypeSign] = makeFloat16UnaryWrapper(origExecSign, execSignF16)
-	nodeExecutors[backends.OpTypeExp] = makeFloat16UnaryWrapper(origExecExp, execExpF16)
-	nodeExecutors[backends.OpTypeExpm1] = makeFloat16UnaryWrapper(origExecExpm1, execExpm1F16)
-	nodeExecutors[backends.OpTypeLog] = makeFloat16UnaryWrapper(origExecLog, execLogF16)
-	nodeExecutors[backends.OpTypeLog1p] = makeFloat16UnaryWrapper(origExecLog1p, execLog1pF16)
-	nodeExecutors[backends.OpTypeCeil] = makeFloat16UnaryWrapper(origExecCeil, execCeilF16)
-	nodeExecutors[backends.OpTypeFloor] = makeFloat16UnaryWrapper(origExecFloor, execFloorF16)
-	nodeExecutors[backends.OpTypeRound] = makeFloat16UnaryWrapper(origExecRound, execRoundF16)
-	nodeExecutors[backends.OpTypeRsqrt] = makeFloat16UnaryWrapper(origExecRsqrt, execRsqrtF16)
-	nodeExecutors[backends.OpTypeCos] = makeFloat16UnaryWrapper(origExecCos, execCosF16)
-	nodeExecutors[backends.OpTypeSin] = makeFloat16UnaryWrapper(origExecSin, execSinF16)
-	nodeExecutors[backends.OpTypeTanh] = makeFloat16UnaryWrapper(origExecTanh, execTanhF16)
-	nodeExecutors[backends.OpTypeLogistic] = makeFloat16UnaryWrapper(origExecLogistic, execLogisticF16)
-	nodeExecutors[backends.OpTypeErf] = makeFloat16UnaryWrapper(origExecErf, execErfF16)
+	// Register Float16 unary wrappers with priorityTyped.
+	// These wrap the generic executors (from exec_unary.go) to handle Float16 dtype.
+	setNodeExecutor(backends.OpTypeNeg, priorityTyped, makeFloat16UnaryWrapper(execNeg, execNegF16))
+	setNodeExecutor(backends.OpTypeAbs, priorityTyped, makeFloat16UnaryWrapper(execAbs, execAbsF16))
+	setNodeExecutor(backends.OpTypeSign, priorityTyped, makeFloat16UnaryWrapper(execSign, execSignF16))
+	setNodeExecutor(backends.OpTypeExp, priorityTyped, makeFloat16UnaryWrapper(execExp, execExpF16))
+	setNodeExecutor(backends.OpTypeExpm1, priorityTyped, makeFloat16UnaryWrapper(execExpm1, execExpm1F16))
+	setNodeExecutor(backends.OpTypeLog, priorityTyped, makeFloat16UnaryWrapper(execLog, execLogF16))
+	setNodeExecutor(backends.OpTypeLog1p, priorityTyped, makeFloat16UnaryWrapper(execLog1p, execLog1pF16))
+	setNodeExecutor(backends.OpTypeCeil, priorityTyped, makeFloat16UnaryWrapper(execCeil, execCeilF16))
+	setNodeExecutor(backends.OpTypeFloor, priorityTyped, makeFloat16UnaryWrapper(execFloor, execFloorF16))
+	setNodeExecutor(backends.OpTypeRound, priorityTyped, makeFloat16UnaryWrapper(execRound, execRoundF16))
+	setNodeExecutor(backends.OpTypeRsqrt, priorityTyped, makeFloat16UnaryWrapper(execRsqrt, execRsqrtF16))
+	setNodeExecutor(backends.OpTypeCos, priorityTyped, makeFloat16UnaryWrapper(execCos, execCosF16))
+	setNodeExecutor(backends.OpTypeSin, priorityTyped, makeFloat16UnaryWrapper(execSin, execSinF16))
+	setNodeExecutor(backends.OpTypeTanh, priorityTyped, makeFloat16UnaryWrapper(execTanh, execTanhF16))
+	setNodeExecutor(backends.OpTypeLogistic, priorityTyped, makeFloat16UnaryWrapper(execLogistic, execLogisticF16))
+	setNodeExecutor(backends.OpTypeErf, priorityTyped, makeFloat16UnaryWrapper(execErf, execErfF16))
 
 	// IsFinite is special - returns bool
-	nodeExecutors[backends.OpTypeIsFinite] = func(backend *Backend, node *Node, inputs []*Buffer, inputsOwned []bool) (*Buffer, error) {
+	setNodeExecutor(backends.OpTypeIsFinite, priorityTyped, func(backend *Backend, node *Node, inputs []*Buffer, inputsOwned []bool) (*Buffer, error) {
 		if inputs[0].shape.DType != dtypes.Float16 {
-			return origExecIsFinite(backend, node, inputs, inputsOwned)
+			return execIsFinite(backend, node, inputs, inputsOwned)
 		}
 		input := inputs[0]
 		output := backend.getBuffer(dtypes.Bool, input.shape.Size())
 		output.shape = node.shape
 		execIsFiniteF16(input.flat.([]float16.Float16), output.flat.([]bool))
 		return output, nil
-	}
+	})
 }

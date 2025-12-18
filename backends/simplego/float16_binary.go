@@ -1,13 +1,14 @@
 package simplego
 
-// This file must come alphabetically after gen_exec_binary.go to ensure its init() runs later.
+// Float16 binary operations support.
+// These wrap the generic binary executors to handle Float16 dtype.
 
 import (
 	"math"
 
 	"github.com/gomlx/gomlx/backends"
-	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
 	"github.com/x448/float16"
 )
 
@@ -74,22 +75,6 @@ func execCompareFloat16[OpFn func(a, b float32) bool](opFn OpFn, lhs, rhs []floa
 	}
 }
 
-// Store original executors before wrapping
-var (
-	origExecAdd            func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecSub            func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecMul            func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecDiv            func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecMax            func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecMin            func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecPow            func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecEqual          func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecNotEqual       func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecGreaterOrEqual func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecGreaterThan    func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecLessOrEqual    func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-	origExecLessThan       func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error)
-)
 
 func makeFloat16BinaryWrapper(
 	origExec func(*Backend, *Node, []*Buffer, []bool) (*Buffer, error),
@@ -130,47 +115,33 @@ func makeFloat16CompareWrapper(
 	}
 }
 
-// Init must run after gen_exec_binary.go's init()
 func init() {
-	// Save original executors
-	origExecAdd = nodeExecutors[backends.OpTypeAdd]
-	origExecSub = nodeExecutors[backends.OpTypeSub]
-	origExecMul = nodeExecutors[backends.OpTypeMul]
-	origExecDiv = nodeExecutors[backends.OpTypeDiv]
-	origExecMax = nodeExecutors[backends.OpTypeMax]
-	origExecMin = nodeExecutors[backends.OpTypeMin]
-	origExecPow = nodeExecutors[backends.OpTypePow]
-	origExecEqual = nodeExecutors[backends.OpTypeEqual]
-	origExecNotEqual = nodeExecutors[backends.OpTypeNotEqual]
-	origExecGreaterOrEqual = nodeExecutors[backends.OpTypeGreaterOrEqual]
-	origExecGreaterThan = nodeExecutors[backends.OpTypeGreaterThan]
-	origExecLessOrEqual = nodeExecutors[backends.OpTypeLessOrEqual]
-	origExecLessThan = nodeExecutors[backends.OpTypeLessThan]
-
-	// Wrap with Float16 support
-	nodeExecutors[backends.OpTypeAdd] = makeFloat16BinaryWrapper(origExecAdd, func(a, b float32) float32 { return a + b })
-	nodeExecutors[backends.OpTypeSub] = makeFloat16BinaryWrapper(origExecSub, func(a, b float32) float32 { return a - b })
-	nodeExecutors[backends.OpTypeMul] = makeFloat16BinaryWrapper(origExecMul, func(a, b float32) float32 { return a * b })
-	nodeExecutors[backends.OpTypeDiv] = makeFloat16BinaryWrapper(origExecDiv, func(a, b float32) float32 { return a / b })
-	nodeExecutors[backends.OpTypeMax] = makeFloat16BinaryWrapper(origExecMax, func(a, b float32) float32 {
+	// Register Float16 wrappers with priorityTyped.
+	// These wrap the generic executors (from gen_exec_binary.go) to handle Float16 dtype.
+	// NEON implementations in float16_binary_neon_arm64.go use priorityArch to override these.
+	setNodeExecutor(backends.OpTypeAdd, priorityTyped, makeFloat16BinaryWrapper(execAdd, func(a, b float32) float32 { return a + b }))
+	setNodeExecutor(backends.OpTypeSub, priorityTyped, makeFloat16BinaryWrapper(execSub, func(a, b float32) float32 { return a - b }))
+	setNodeExecutor(backends.OpTypeMul, priorityTyped, makeFloat16BinaryWrapper(execMul, func(a, b float32) float32 { return a * b }))
+	setNodeExecutor(backends.OpTypeDiv, priorityTyped, makeFloat16BinaryWrapper(execDiv, func(a, b float32) float32 { return a / b }))
+	setNodeExecutor(backends.OpTypeMax, priorityTyped, makeFloat16BinaryWrapper(execMax, func(a, b float32) float32 {
 		if a > b {
 			return a
 		}
 		return b
-	})
-	nodeExecutors[backends.OpTypeMin] = makeFloat16BinaryWrapper(origExecMin, func(a, b float32) float32 {
+	}))
+	setNodeExecutor(backends.OpTypeMin, priorityTyped, makeFloat16BinaryWrapper(execMin, func(a, b float32) float32 {
 		if a < b {
 			return a
 		}
 		return b
-	})
-	nodeExecutors[backends.OpTypePow] = makeFloat16BinaryWrapper(origExecPow, func(a, b float32) float32 {
+	}))
+	setNodeExecutor(backends.OpTypePow, priorityTyped, makeFloat16BinaryWrapper(execPow, func(a, b float32) float32 {
 		return float32(math.Pow(float64(a), float64(b)))
-	})
-	nodeExecutors[backends.OpTypeEqual] = makeFloat16CompareWrapper(origExecEqual, func(a, b float32) bool { return a == b })
-	nodeExecutors[backends.OpTypeNotEqual] = makeFloat16CompareWrapper(origExecNotEqual, func(a, b float32) bool { return a != b })
-	nodeExecutors[backends.OpTypeGreaterOrEqual] = makeFloat16CompareWrapper(origExecGreaterOrEqual, func(a, b float32) bool { return a >= b })
-	nodeExecutors[backends.OpTypeGreaterThan] = makeFloat16CompareWrapper(origExecGreaterThan, func(a, b float32) bool { return a > b })
-	nodeExecutors[backends.OpTypeLessOrEqual] = makeFloat16CompareWrapper(origExecLessOrEqual, func(a, b float32) bool { return a <= b })
-	nodeExecutors[backends.OpTypeLessThan] = makeFloat16CompareWrapper(origExecLessThan, func(a, b float32) bool { return a < b })
+	}))
+	setNodeExecutor(backends.OpTypeEqual, priorityTyped, makeFloat16CompareWrapper(execEqual, func(a, b float32) bool { return a == b }))
+	setNodeExecutor(backends.OpTypeNotEqual, priorityTyped, makeFloat16CompareWrapper(execNotEqual, func(a, b float32) bool { return a != b }))
+	setNodeExecutor(backends.OpTypeGreaterOrEqual, priorityTyped, makeFloat16CompareWrapper(execGreaterOrEqual, func(a, b float32) bool { return a >= b }))
+	setNodeExecutor(backends.OpTypeGreaterThan, priorityTyped, makeFloat16CompareWrapper(execGreaterThan, func(a, b float32) bool { return a > b }))
+	setNodeExecutor(backends.OpTypeLessOrEqual, priorityTyped, makeFloat16CompareWrapper(execLessOrEqual, func(a, b float32) bool { return a <= b }))
+	setNodeExecutor(backends.OpTypeLessThan, priorityTyped, makeFloat16CompareWrapper(execLessThan, func(a, b float32) bool { return a < b }))
 }

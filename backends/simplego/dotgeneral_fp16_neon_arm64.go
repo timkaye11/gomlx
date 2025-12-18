@@ -231,18 +231,18 @@ func buildDotGeneralKernelFloat16ToFloat32(lhs, rhs, output *Buffer, blockDim in
 }
 
 func init() {
-	// Register FP16 optimized kernels (uses NEON FMLAL/FMLAL2)
-	// priorityTyped overrides priorityGeneric from gen_register_dtypes.go
-	dotGeneralNormalizedDTypeMap.Register(dtypes.Float16, priorityTyped, execNormalizedDotGeneralFloat16ToFloat32)
+	// Register FP16 NEON-optimized kernels (uses NEON FMLAL/FMLAL2).
+	// priorityArch overrides priorityTyped fallback in dotgeneral_fp16_stub.go
+	dotGeneralNormalizedDTypeMap.Register(dtypes.Float16, priorityArch, execNormalizedDotGeneralFloat16ToFloat32)
 
-	// Register BF16 optimized kernels (uses NEON BFMLALB)
-	// This overrides the scalar version in dotgeneral_small.go when NEON is available
+	// Register BF16 NEON-optimized kernels (uses NEON BFMLALB).
+	// This overrides the scalar version in dotgeneral_small.go when NEON is available.
 	if hasBF16NEON {
-		dotGeneralNormalizedDTypeMap.Register(dtypes.BFloat16, priorityTyped, execNormalizedDotGeneralBFloat16ToFloat32)
+		dotGeneralNormalizedDTypeMap.Register(dtypes.BFloat16, priorityArch, execNormalizedDotGeneralBFloat16ToFloat32)
 	}
 
 	// Register kernel builders for large matrix path
-	dotGeneralKernelDTypeMap.Register(dtypes.Float16, priorityTyped, buildDotGeneralKernelFloat16ToFloat32)
+	dotGeneralKernelDTypeMap.Register(dtypes.Float16, priorityArch, buildDotGeneralKernelFloat16ToFloat32)
 }
 
 // dotProductBF16InnerLoop computes the dot product of lhs[lhsIdx:lhsIdx+size] and rhs[rhsIdx:rhsIdx+size]

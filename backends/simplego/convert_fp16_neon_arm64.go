@@ -121,7 +121,8 @@ func convertFloat16SliceToFloat32(input []float16.Float16, output []float32) {
 }
 
 func init() {
-	// Override Float16↔Float32 conversions with NEON-accelerated versions
-	convertDTypePairMap.Register(dtypes.Float16, dtypes.Float32, priorityTyped, execConvertDTypeFloat16ToFloat32NEON)
-	convertDTypePairMap.Register(dtypes.Float32, dtypes.Float16, priorityTyped, execConvertDTypeFloat32ToFloat16NEON)
+	// Override Float16↔Float32 conversions with NEON-accelerated versions.
+	// priorityArch overrides priorityTyped fallback in exec_special_ops.go
+	convertDTypePairMap.Register(dtypes.Float16, dtypes.Float32, priorityArch, execConvertDTypeFloat16ToFloat32NEON)
+	convertDTypePairMap.Register(dtypes.Float32, dtypes.Float16, priorityArch, execConvertDTypeFloat32ToFloat16NEON)
 }
