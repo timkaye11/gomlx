@@ -803,3 +803,181 @@ func TestDotGeneral_PreBlockSmallMatrixSkipped(t *testing.T) {
 	fmt.Printf("\tSmall matrix test passed: matrix [%d, %d] was not pre-blocked (blockDim=%d)\n",
 		smallK, smallN, blockDim)
 }
+
+// TestDotGeneral_Int8 tests int8 matrix multiplication with saturation.
+// This exercises the int8→int32 accumulation and saturation back to int8.
+func TestDotGeneral_Int8(t *testing.T) {
+	goBackend, ok := backend.(*Backend)
+	if !ok {
+		t.Skip("Skipping test because backend is not a SimpleGo Backend")
+	}
+
+	// Reset execution path at exit
+	defer func() {
+		goBackend.dotGeneralForceExecutionPath = autoSelectPath
+	}()
+
+	for _, execPath := range []dotGeneralExecutionPath{normalizedPath, blockedPath} {
+		goBackend.dotGeneralForceExecutionPath = execPath
+		pathName := "normalized"
+		if execPath == blockedPath {
+			pathName = "blocked"
+		}
+
+		t.Run(pathName, func(t *testing.T) {
+			// Test 1: Simple 2x3 × 3x2 = 2x2 matrix multiplication
+			t.Run("simple_matmul", func(t *testing.T) {
+				// lhs = [[1, 2, 3], [4, 5, 6]]
+				// rhs = [[1, 2], [3, 4], [5, 6]]
+				// expected = [[22, 28], [49, 64]]
+				// 22 = 1*1 + 2*3 + 3*5 = 1 + 6 + 15
+				// 28 = 1*2 + 2*4 + 3*6 = 2 + 8 + 18
+				// 49 = 4*1 + 5*3 + 6*5 = 4 + 15 + 30
+				// 64 = 4*2 + 5*4 + 6*6 = 8 + 20 + 36
+				lhs := [][]int8{{1, 2, 3}, {4, 5, 6}}
+				rhs := [][]int8{{1, 2}, {3, 4}, {5, 6}}
+
+				result := graph.MustExecOnce(backend, func(lhsNode, rhsNode *graph.Node) *graph.Node {
+					return graph.DotGeneral(lhsNode, []int{1}, []int{}, rhsNode, []int{0}, []int{})
+				}, lhs, rhs)
+
+				got := result.Value().([][]int8)
+				expected := [][]int8{{22, 28}, {49, 64}}
+				require.Equal(t, expected, got, "Int8 matmul result mismatch")
+				fmt.Printf("\tInt8 simple matmul passed: got %v\n", got)
+			})
+
+			// Test 2: Saturation test - values that overflow int8 range
+			t.Run("saturation", func(t *testing.T) {
+				// 100 * 100 = 10000, which exceeds int8 max (127)
+				// Should saturate to 127
+				lhs := [][]int8{{100}}
+				rhs := [][]int8{{100}}
+
+				result := graph.MustExecOnce(backend, func(lhsNode, rhsNode *graph.Node) *graph.Node {
+					return graph.DotGeneral(lhsNode, []int{1}, []int{}, rhsNode, []int{0}, []int{})
+				}, lhs, rhs)
+
+				got := result.Value().([][]int8)
+				// 100 * 100 = 10000 → saturates to 127
+				require.Equal(t, int8(127), got[0][0], "Should saturate to 127")
+				fmt.Printf("\tInt8 saturation (positive) passed: 100*100 → %d\n", got[0][0])
+			})
+
+			// Test 3: Negative saturation
+			t.Run("negative_saturation", func(t *testing.T) {
+				// -100 * 100 = -10000, which is below int8 min (-128)
+				// Should saturate to -128
+				lhs := [][]int8{{-100}}
+				rhs := [][]int8{{100}}
+
+				result := graph.MustExecOnce(backend, func(lhsNode, rhsNode *graph.Node) *graph.Node {
+					return graph.DotGeneral(lhsNode, []int{1}, []int{}, rhsNode, []int{0}, []int{})
+				}, lhs, rhs)
+
+				got := result.Value().([][]int8)
+				require.Equal(t, int8(-128), got[0][0], "Should saturate to -128")
+				fmt.Printf("\tInt8 saturation (negative) passed: -100*100 → %d\n", got[0][0])
+			})
+
+			// Test 4: Larger matrix to exercise NEON path (if available)
+			t.Run("larger_matrix", func(t *testing.T) {
+				m, k, n := 32, 64, 32
+				lhs := make([][]int8, m)
+				rhs := make([][]int8, k)
+
+				for i := range lhs {
+					lhs[i] = make([]int8, k)
+					for j := range lhs[i] {
+						lhs[i][j] = int8((i + j) % 10)
+					}
+				}
+				for i := range rhs {
+					rhs[i] = make([]int8, n)
+					for j := range rhs[i] {
+						rhs[i][j] = int8((i * j) % 10)
+					}
+				}
+
+				// Calculate expected result manually
+				expected := make([][]int8, m)
+				for i := range expected {
+					expected[i] = make([]int8, n)
+					for j := range expected[i] {
+						var sum int32
+						for l := 0; l < k; l++ {
+							sum += int32(lhs[i][l]) * int32(rhs[l][j])
+						}
+						// Saturate to int8
+						if sum > 127 {
+							sum = 127
+						} else if sum < -128 {
+							sum = -128
+						}
+						expected[i][j] = int8(sum)
+					}
+				}
+
+				result := graph.MustExecOnce(backend, func(lhsNode, rhsNode *graph.Node) *graph.Node {
+					return graph.DotGeneral(lhsNode, []int{1}, []int{}, rhsNode, []int{0}, []int{})
+				}, lhs, rhs)
+
+				got := result.Value().([][]int8)
+				require.Equal(t, expected, got, "Int8 larger matrix result mismatch")
+				fmt.Printf("\tInt8 larger matrix [%d,%d]×[%d,%d] passed\n", m, k, k, n)
+			})
+		})
+	}
+}
+
+// TestDotGeneral_Uint8 tests uint8 matrix multiplication with saturation.
+func TestDotGeneral_Uint8(t *testing.T) {
+	goBackend, ok := backend.(*Backend)
+	if !ok {
+		t.Skip("Skipping test because backend is not a SimpleGo Backend")
+	}
+
+	defer func() {
+		goBackend.dotGeneralForceExecutionPath = autoSelectPath
+	}()
+
+	for _, execPath := range []dotGeneralExecutionPath{normalizedPath, blockedPath} {
+		goBackend.dotGeneralForceExecutionPath = execPath
+		pathName := "normalized"
+		if execPath == blockedPath {
+			pathName = "blocked"
+		}
+
+		t.Run(pathName, func(t *testing.T) {
+			// Test 1: Simple matmul
+			t.Run("simple_matmul", func(t *testing.T) {
+				lhs := [][]uint8{{1, 2, 3}, {4, 5, 6}}
+				rhs := [][]uint8{{1, 2}, {3, 4}, {5, 6}}
+
+				result := graph.MustExecOnce(backend, func(lhsNode, rhsNode *graph.Node) *graph.Node {
+					return graph.DotGeneral(lhsNode, []int{1}, []int{}, rhsNode, []int{0}, []int{})
+				}, lhs, rhs)
+
+				got := result.Value().([][]uint8)
+				expected := [][]uint8{{22, 28}, {49, 64}}
+				require.Equal(t, expected, got, "Uint8 matmul result mismatch")
+				fmt.Printf("\tUint8 simple matmul passed: got %v\n", got)
+			})
+
+			// Test 2: Saturation test
+			t.Run("saturation", func(t *testing.T) {
+				// 200 * 200 = 40000, which exceeds uint8 max (255)
+				lhs := [][]uint8{{200}}
+				rhs := [][]uint8{{200}}
+
+				result := graph.MustExecOnce(backend, func(lhsNode, rhsNode *graph.Node) *graph.Node {
+					return graph.DotGeneral(lhsNode, []int{1}, []int{}, rhsNode, []int{0}, []int{})
+				}, lhs, rhs)
+
+				got := result.Value().([][]uint8)
+				require.Equal(t, uint8(255), got[0][0], "Should saturate to 255")
+				fmt.Printf("\tUint8 saturation passed: 200*200 → %d\n", got[0][0])
+			})
+		})
+	}
+}
