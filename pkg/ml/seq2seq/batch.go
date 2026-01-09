@@ -60,6 +60,10 @@ type Batch struct {
 }
 
 // KVCache manages the key-value cache for decoder self-attention and cross-attention.
+//
+// TODO: Consider unifying with layers/attention/kvcache.go (PR #294) once that lands.
+// This implementation includes cross-attention cache for encoder-decoder models,
+// while the layers/attention version is optimized for decoder-only models.
 type KVCache struct {
 	// NumLayers is the number of decoder layers.
 	NumLayers int
