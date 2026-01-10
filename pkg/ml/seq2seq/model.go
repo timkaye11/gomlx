@@ -90,6 +90,11 @@ type Model struct {
 
 	// Config holds model configuration parameters.
 	Config *ModelConfig
+
+	// postProcessors holds cached executors for post-processing (greedy/sampling).
+	// Key format: "greedy" or "sampling_<topK>"
+	postProcessors map[string]*context.Exec
+	postProcMu     sync.RWMutex
 }
 
 // SubModel represents a component model (encoder, decoder-init, or decoder).
@@ -325,4 +330,85 @@ func (m *Model) String() string {
 
 	return fmt.Sprintf("Seq2SeqModel{backend=%s, hasEncoder=%t, hasDecoderInit=%t, hasDecoder=%t}",
 		m.backendType, hasEncoder, hasDecoderInit, hasDecoder)
+}
+
+// getOrCreateGreedyPostProcessor returns a cached or creates a new greedy post-processor.
+// The post-processor takes logits and returns argmax token IDs on-device.
+func (m *Model) getOrCreateGreedyPostProcessor() (*context.Exec, error) {
+	m.postProcMu.RLock()
+	if m.postProcessors != nil {
+		if exec, ok := m.postProcessors["greedy"]; ok {
+			m.postProcMu.RUnlock()
+			return exec, nil
+		}
+	}
+	m.postProcMu.RUnlock()
+
+	m.postProcMu.Lock()
+	defer m.postProcMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if m.postProcessors != nil {
+		if exec, ok := m.postProcessors["greedy"]; ok {
+			return exec, nil
+		}
+	}
+
+	// Create new executor for greedy post-processing
+	// Uses context.Node which is an alias for graph.Node
+	exec, err := context.NewExec(m.backend, m.ctx, func(_ *context.Context, logits *context.Node) *context.Node {
+		return buildGreedyPostProcessGraph(logits)
+	})
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to create greedy post-processor")
+	}
+
+	if m.postProcessors == nil {
+		m.postProcessors = make(map[string]*context.Exec)
+	}
+	m.postProcessors["greedy"] = exec
+
+	return exec, nil
+}
+
+// getOrCreateSamplingPostProcessor returns a cached or creates a new sampling post-processor.
+// The post-processor applies temperature, softmax, and TopK on-device.
+func (m *Model) getOrCreateSamplingPostProcessor(topK int) (*context.Exec, error) {
+	key := fmt.Sprintf("sampling_%d", topK)
+
+	m.postProcMu.RLock()
+	if m.postProcessors != nil {
+		if exec, ok := m.postProcessors[key]; ok {
+			m.postProcMu.RUnlock()
+			return exec, nil
+		}
+	}
+	m.postProcMu.RUnlock()
+
+	m.postProcMu.Lock()
+	defer m.postProcMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if m.postProcessors != nil {
+		if exec, ok := m.postProcessors[key]; ok {
+			return exec, nil
+		}
+	}
+
+	// Create new executor for sampling post-processing
+	// topK is captured in closure
+	exec, err := context.NewExec(m.backend, m.ctx, func(_ *context.Context, logits, temperature *context.Node) []*context.Node {
+		probs, indices := buildSamplingPostProcessGraph(logits, temperature, topK)
+		return []*context.Node{probs, indices}
+	})
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to create sampling post-processor")
+	}
+
+	if m.postProcessors == nil {
+		m.postProcessors = make(map[string]*context.Exec)
+	}
+	m.postProcessors[key] = exec
+
+	return exec, nil
 }

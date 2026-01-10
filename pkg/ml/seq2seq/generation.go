@@ -200,28 +200,54 @@ func (b *Batch) Generate(config *GenerationConfig) ([][]int32, error) {
 		}
 	}
 
+	// Determine effective TopK for sampling mode.
+	// Default to 50 if not specified, which covers most sampling scenarios.
+	effectiveTopK := config.TopK
+	if effectiveTopK <= 0 {
+		effectiveTopK = 50
+	}
+
+	// Use provided Rand or create a default one for sampling mode.
+	rng := config.Rand
+	if rng == nil {
+		rng = rand.New(rand.NewSource(rand.Int63()))
+	}
+
 	// Generation loop.
 	for step := 0; step < config.MaxLength && numFinished < batchSize; step++ {
 		// Create input tensor for this step.
 		inputTensor := tensors.FromFlatDataAndDimensions(currentIDs, batchSize, 1)
 
-		// Run decoder step.
-		logits, err := b.RunDecoderStep(inputTensor)
-		if err != nil {
-			inputTensor.FinalizeAll()
-			return nil, errors.WithMessagef(err, "decoder step %d failed", step)
+		var nextTokens []int32
+		var err error
+
+		if config.DoSample {
+			// Sampling mode: use on-device softmax + TopK, then sample on CPU.
+			// This transfers only O(k) data instead of O(vocab_size).
+			samplingOut, samplingErr := b.RunDecoderStepSampling(inputTensor, config.Temperature, effectiveTopK)
+			if samplingErr != nil {
+				inputTensor.FinalizeAll()
+				return nil, errors.WithMessagef(samplingErr, "decoder step %d failed", step)
+			}
+
+			// Sample from TopK output on CPU.
+			nextTokens, err = sampleFromTopKOutput(samplingOut, config, rng)
+			samplingOut.Finalize()
+		} else {
+			// Greedy mode: use on-device argmax.
+			// This transfers only O(batch_size) data instead of O(vocab_size).
+			tokenIDsTensor, greedyErr := b.RunDecoderStepGreedy(inputTensor)
+			if greedyErr != nil {
+				inputTensor.FinalizeAll()
+				return nil, errors.WithMessagef(greedyErr, "decoder step %d failed", step)
+			}
+
+			nextTokens, err = TensorToInt32Slice(tokenIDsTensor)
+			tokenIDsTensor.FinalizeAll()
 		}
 
-		// Get next tokens from logits.
-		var nextTokens []int32
-		if config.DoSample {
-			nextTokens, err = sampleFromLogits(logits, config)
-		} else {
-			nextTokens, err = argmaxFromLogits(logits)
-		}
 		if err != nil {
 			inputTensor.FinalizeAll()
-			logits.FinalizeAll()
 			return nil, errors.WithMessage(err, "failed to get next tokens")
 		}
 
@@ -242,9 +268,8 @@ func (b *Batch) Generate(config *GenerationConfig) ([][]int32, error) {
 			}
 		}
 
-		// Cleanup intermediate tensors.
+		// Cleanup input tensor.
 		inputTensor.FinalizeAll()
-		logits.FinalizeAll()
 	}
 
 	// Handle forced EOS at max length.
@@ -422,6 +447,81 @@ func sampleWithRng(probs []float32, rng *rand.Rand) int {
 		}
 	}
 	return len(probs) - 1
+}
+
+// sampleFromTopKOutput samples tokens from TopK probabilities/indices returned by on-device processing.
+// This is much faster than the old sampleFromLogits because k << vocab_size.
+// The TopK values are already sorted in descending order by probability.
+func sampleFromTopKOutput(out *SamplingOutput, config *GenerationConfig, rng *rand.Rand) ([]int32, error) {
+	// Extract TopK data from tensors.
+	probs, err := TensorToFloat32Slice(out.TopKProbs)
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to extract TopK probabilities")
+	}
+	indices, err := TensorToInt32Slice(out.TopKIndices)
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to extract TopK indices")
+	}
+
+	shape := out.TopKProbs.Shape()
+	batchSize := shape.Dimensions[0]
+	k := shape.Dimensions[1]
+
+	tokens := make([]int32, batchSize)
+
+	for batch := 0; batch < batchSize; batch++ {
+		offset := batch * k
+		batchProbs := probs[offset : offset+k]
+		batchIndices := indices[offset : offset+k]
+
+		// Apply TopP filtering within TopK (already sorted by probability descending).
+		var candidates []indexedProb
+		if config.TopP < 1.0 {
+			var cumSum float32
+			for i := 0; i < k; i++ {
+				candidates = append(candidates, indexedProb{
+					index: int(batchIndices[i]),
+					prob:  batchProbs[i],
+				})
+				cumSum += batchProbs[i]
+				if float64(cumSum) >= config.TopP {
+					break
+				}
+			}
+		} else {
+			for i := 0; i < k; i++ {
+				candidates = append(candidates, indexedProb{
+					index: int(batchIndices[i]),
+					prob:  batchProbs[i],
+				})
+			}
+		}
+
+		// Normalize and sample.
+		var sum float32
+		for _, c := range candidates {
+			sum += c.prob
+		}
+
+		r := rng.Float32() * sum
+		var cumProb float32
+		sampled := false
+		for _, c := range candidates {
+			cumProb += c.prob
+			if r <= cumProb {
+				tokens[batch] = int32(c.index)
+				sampled = true
+				break
+			}
+		}
+
+		// Fallback to most likely if not sampled.
+		if !sampled && len(candidates) > 0 {
+			tokens[batch] = int32(candidates[0].index)
+		}
+	}
+
+	return tokens, nil
 }
 
 // sampleTopP implements nucleus (top-p) sampling.

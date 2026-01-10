@@ -258,6 +258,103 @@ func (b *Batch) RunDecoderStep(inputIDs *tensors.Tensor) (*tensors.Tensor, error
 	}
 }
 
+// RunDecoderStepGreedy executes decoder and returns argmax token IDs on-device.
+// This is more efficient than RunDecoderStep + CPU argmax as it avoids
+// transferring the full vocabulary-sized logits tensor.
+//
+// Returns tensor of shape [batch_size] with dtype int32.
+func (b *Batch) RunDecoderStepGreedy(inputIDs *tensors.Tensor) (*tensors.Tensor, error) {
+	// First, get logits from decoder
+	logits, err := b.RunDecoderStep(inputIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer logits.FinalizeAll()
+
+	// Get or create greedy post-processor
+	postProc, err := b.model.getOrCreateGreedyPostProcessor()
+	if err != nil {
+		return nil, err
+	}
+
+	// Execute post-processing on-device
+	outputs, err := postProc.Exec(logits)
+	if err != nil {
+		return nil, errors.WithMessage(err, "greedy post-processing failed")
+	}
+	if len(outputs) == 0 {
+		return nil, errors.New("greedy post-processor returned no outputs")
+	}
+
+	return outputs[0], nil
+}
+
+// SamplingOutput holds the result of RunDecoderStepSampling.
+type SamplingOutput struct {
+	// TopKProbs contains the top-k probabilities for each batch item.
+	// Shape: [batch_size, k] float32
+	TopKProbs *tensors.Tensor
+
+	// TopKIndices contains the token indices for the top-k probabilities.
+	// Shape: [batch_size, k] int32
+	TopKIndices *tensors.Tensor
+}
+
+// Finalize releases the tensors in the sampling output.
+func (s *SamplingOutput) Finalize() {
+	if s.TopKProbs != nil {
+		s.TopKProbs.FinalizeAll()
+		s.TopKProbs = nil
+	}
+	if s.TopKIndices != nil {
+		s.TopKIndices.FinalizeAll()
+		s.TopKIndices = nil
+	}
+}
+
+// RunDecoderStepSampling executes decoder and returns TopK probabilities/indices.
+// This applies temperature scaling, softmax, and TopK filtering on-device,
+// then returns only the top-k candidates for CPU-side sampling.
+//
+// This is much more efficient than RunDecoderStep + CPU softmax/sampling
+// as it reduces data transfer from O(vocab_size) to O(k).
+func (b *Batch) RunDecoderStepSampling(
+	inputIDs *tensors.Tensor,
+	temperature float64,
+	topK int,
+) (*SamplingOutput, error) {
+	// Get logits from decoder
+	logits, err := b.RunDecoderStep(inputIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer logits.FinalizeAll()
+
+	// Get or create sampling post-processor
+	postProc, err := b.model.getOrCreateSamplingPostProcessor(topK)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create temperature tensor (scalar)
+	tempTensor := tensors.FromScalar(float32(temperature))
+	defer tempTensor.FinalizeAll()
+
+	// Execute post-processing on-device
+	outputs, err := postProc.Exec(logits, tempTensor)
+	if err != nil {
+		return nil, errors.WithMessage(err, "sampling post-processing failed")
+	}
+	if len(outputs) < 2 {
+		return nil, errors.Errorf("sampling post-processor returned %d outputs, expected 2", len(outputs))
+	}
+
+	return &SamplingOutput{
+		TopKProbs:   outputs[0],
+		TopKIndices: outputs[1],
+	}, nil
+}
+
 // Destroy releases all resources held by the batch.
 func (b *Batch) Destroy() {
 	if b.EncoderHiddenStates != nil {
