@@ -85,12 +85,13 @@ func TestSoftmax(t *testing.T) {
 
 func TestSampleTopP(t *testing.T) {
 	// Test with deterministic probabilities.
+	rng := rand.New(rand.NewSource(42))
 	probs := []float32{0.7, 0.2, 0.1}
 
 	// With topP = 0.5, should almost always return index 0.
 	counts := make(map[int]int)
 	for i := 0; i < 1000; i++ {
-		idx := sampleTopP(probs, 0.5)
+		idx := sampleFromTopProbs(probs, 0.5, 0, rng)
 		counts[idx]++
 	}
 
@@ -101,12 +102,13 @@ func TestSampleTopP(t *testing.T) {
 }
 
 func TestSampleTopK(t *testing.T) {
+	rng := rand.New(rand.NewSource(42))
 	probs := []float32{0.1, 0.3, 0.2, 0.4}
 
 	// With topK = 2, should only sample indices 1 and 3 (top 2 by probability).
 	counts := make(map[int]int)
 	for i := 0; i < 1000; i++ {
-		idx := sampleTopK(probs, 2)
+		idx := sampleFromTopProbs(probs, 1.0, 2, rng)
 		counts[idx]++
 	}
 
@@ -540,4 +542,106 @@ func TestSampleFromTopProbsWithTopP(t *testing.T) {
 	if counts[3] < 500 {
 		t.Errorf("expected index 3 to dominate with topP=0.6, got counts: %v", counts)
 	}
+}
+
+func TestBuildGreedyPostProcessGraph(t *testing.T) {
+	// Test 2D logits [batch_size, vocab_size]
+	t.Run("2D logits", func(t *testing.T) {
+		graphtest.RunTestGraphFn(t, "Greedy2D",
+			func(g *graph.Graph) (inputs, outputs []*graph.Node) {
+				// Batch size 2, vocab size 4
+				// Batch 0: max at index 2 (value 3.0)
+				// Batch 1: max at index 0 (value 4.0)
+				logits := graph.Const(g, [][]float32{
+					{1.0, 2.0, 3.0, 0.5},
+					{4.0, 1.0, 2.0, 3.0},
+				})
+				tokenIDs := buildGreedyPostProcessGraph(logits)
+				return nil, []*graph.Node{tokenIDs}
+			},
+			[]any{
+				[]int32{2, 0},
+			},
+			0.0,
+		)
+	})
+
+	// Test 3D logits [batch_size, seq_len, vocab_size]
+	t.Run("3D logits", func(t *testing.T) {
+		graphtest.RunTestGraphFn(t, "Greedy3D",
+			func(g *graph.Graph) (inputs, outputs []*graph.Node) {
+				// Batch size 2, seq_len 1, vocab size 3
+				logits := graph.Const(g, [][][]float32{
+					{{1.0, 5.0, 2.0}}, // max at index 1
+					{{3.0, 1.0, 2.0}}, // max at index 0
+				})
+				tokenIDs := buildGreedyPostProcessGraph(logits)
+				return nil, []*graph.Node{tokenIDs}
+			},
+			[]any{
+				[]int32{1, 0},
+			},
+			0.0,
+		)
+	})
+}
+
+func TestBuildSamplingPostProcessGraph(t *testing.T) {
+	// Test that TopK returns correct shape and values
+	t.Run("TopK shape and values", func(t *testing.T) {
+		graphtest.RunTestGraphFn(t, "SamplingTopK",
+			func(g *graph.Graph) (inputs, outputs []*graph.Node) {
+				// Batch size 1, vocab size 5
+				// After softmax with temp=1, we get probabilities
+				logits := graph.Const(g, [][]float32{
+					{0.0, 1.0, 2.0, 3.0, 4.0}, // Highest at index 4
+				})
+				temperature := graph.Scalar(g, dtypes.Float32, 1.0)
+
+				topKProbs, topKIndices := buildSamplingPostProcessGraph(logits, temperature, 3)
+
+				// Check shapes
+				topKProbs.AssertDims(1, 3)
+				topKIndices.AssertDims(1, 3)
+
+				// The top 3 indices should be 4, 3, 2 (in descending prob order)
+				return nil, []*graph.Node{topKIndices}
+			},
+			[]any{
+				[][]int32{{4, 3, 2}},
+			},
+			0.0,
+		)
+	})
+
+	// Test temperature scaling
+	t.Run("Temperature scaling", func(t *testing.T) {
+		graphtest.RunTestGraphFn(t, "SamplingTemp",
+			func(g *graph.Graph) (inputs, outputs []*graph.Node) {
+				// With high temperature, probabilities should be more uniform
+				logits := graph.Const(g, [][]float32{
+					{0.0, 10.0}, // Without temp: very skewed. With high temp: more uniform
+				})
+
+				// Low temperature (sharp distribution)
+				tempLow := graph.Scalar(g, dtypes.Float32, 0.1)
+				probsLow, _ := buildSamplingPostProcessGraph(logits, tempLow, 2)
+				maxProbLow := graph.ReduceMax(probsLow)
+
+				// High temperature (flatter distribution)
+				tempHigh := graph.Scalar(g, dtypes.Float32, 10.0)
+				probsHigh, _ := buildSamplingPostProcessGraph(logits, tempHigh, 2)
+				maxProbHigh := graph.ReduceMax(probsHigh)
+
+				// Low temp should have higher max prob than high temp
+				lowMoreConcentrated := graph.GreaterThan(maxProbLow, maxProbHigh)
+
+				return nil, []*graph.Node{lowMoreConcentrated}
+			},
+			[]any{
+				true,
+			},
+			0.0,
+		)
+	})
 }

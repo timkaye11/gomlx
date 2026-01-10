@@ -25,6 +25,10 @@ import (
 	"github.com/pkg/errors"
 )
 
+// defaultSamplingTopK is the default number of top tokens to consider when sampling.
+// This provides a good balance between diversity and quality for most use cases.
+const defaultSamplingTopK = 50
+
 // indexedProb pairs a token index with its probability.
 // Used internally for sorting tokens by probability during sampling.
 type indexedProb struct {
@@ -201,10 +205,9 @@ func (b *Batch) Generate(config *GenerationConfig) ([][]int32, error) {
 	}
 
 	// Determine effective TopK for sampling mode.
-	// Default to 50 if not specified, which covers most sampling scenarios.
 	effectiveTopK := config.TopK
 	if effectiveTopK <= 0 {
-		effectiveTopK = 50
+		effectiveTopK = defaultSamplingTopK
 	}
 
 	// Use provided Rand or create a default one for sampling mode.
@@ -313,49 +316,6 @@ func argmaxFromLogits(logits *tensors.Tensor) ([]int32, error) {
 	return tokens, nil
 }
 
-// sampleFromLogits samples token IDs from logits with temperature and top-p/top-k.
-func sampleFromLogits(logits *tensors.Tensor, config *GenerationConfig) ([]int32, error) {
-	batchSize, _, batchLogits, err := extractLogitsData(logits)
-	if err != nil {
-		return nil, err
-	}
-
-	// Use provided Rand or create a default one.
-	rng := config.Rand
-	if rng == nil {
-		rng = rand.New(rand.NewSource(rand.Int63()))
-	}
-
-	tokens := make([]int32, batchSize)
-	for batch := 0; batch < batchSize; batch++ {
-		logitsSlice := batchLogits[batch]
-
-		// Apply temperature.
-		if config.Temperature != 1.0 && config.Temperature > 0 {
-			for i := range logitsSlice {
-				logitsSlice[i] /= float32(config.Temperature)
-			}
-		}
-
-		// Convert to probabilities with softmax.
-		probs := softmax(logitsSlice)
-
-		// Apply top-p (nucleus) or top-k sampling.
-		var sampledToken int
-		if config.TopP < 1.0 {
-			sampledToken = sampleFromTopProbs(probs, config.TopP, 0, rng)
-		} else if config.TopK > 0 {
-			sampledToken = sampleFromTopProbs(probs, 1.0, config.TopK, rng)
-		} else {
-			sampledToken = sampleWithRng(probs, rng)
-		}
-
-		tokens[batch] = int32(sampledToken)
-	}
-
-	return tokens, nil
-}
-
 // softmax computes softmax over a slice of logits.
 func softmax(logits []float32) []float32 {
 	// Find max for numerical stability.
@@ -450,7 +410,7 @@ func sampleWithRng(probs []float32, rng *rand.Rand) int {
 }
 
 // sampleFromTopKOutput samples tokens from TopK probabilities/indices returned by on-device processing.
-// This is much faster than the old sampleFromLogits because k << vocab_size.
+// This is much faster than CPU-side sampling because k << vocab_size.
 // The TopK values are already sorted in descending order by probability.
 func sampleFromTopKOutput(out *SamplingOutput, config *GenerationConfig, rng *rand.Rand) ([]int32, error) {
 	// Extract TopK data from tensors.
@@ -522,24 +482,6 @@ func sampleFromTopKOutput(out *SamplingOutput, config *GenerationConfig, rng *ra
 	}
 
 	return tokens, nil
-}
-
-// sampleTopP implements nucleus (top-p) sampling.
-// Deprecated: Use sampleFromTopProbs instead. Kept for backward compatibility.
-func sampleTopP(probs []float32, topP float32) int {
-	return sampleFromTopProbs(probs, float64(topP), 0, rand.New(rand.NewSource(rand.Int63())))
-}
-
-// sampleTopK samples from the top-k most likely tokens.
-// Deprecated: Use sampleFromTopProbs instead. Kept for backward compatibility.
-func sampleTopK(probs []float32, topK int) int {
-	return sampleFromTopProbs(probs, 1.0, topK, rand.New(rand.NewSource(rand.Int63())))
-}
-
-// sampleFromProbs samples a token index from a probability distribution.
-// Deprecated: Use sampleWithRng instead. Kept for backward compatibility.
-func sampleFromProbs(probs []float32) int {
-	return sampleWithRng(probs, rand.New(rand.NewSource(rand.Int63())))
 }
 
 // ApplyRepetitionPenalty modifies logits to penalize already-generated tokens.

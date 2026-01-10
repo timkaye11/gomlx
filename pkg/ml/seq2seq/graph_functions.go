@@ -29,9 +29,11 @@ import (
 type EncoderGraphFn func(ctx *context.Context, inputIDs, attentionMask *graph.Node) []*graph.Node
 
 // DecoderGraphFn defines the signature for decoder graph-building functions.
-// It takes encoder hidden states, encoder attention mask, decoder input IDs,
-// and optionally past KV cache, and returns logits and new KV cache.
-type DecoderGraphFn func(ctx *context.Context, encoderHiddenStates, encoderAttentionMask, decoderInputIDs *graph.Node, pastKVCache []*graph.Node) []*graph.Node
+// Takes encoder hidden states, encoder attention mask, and decoder input IDs.
+// Returns logits tensor.
+//
+// Note: KV cache parameters will be added when PR #294 lands.
+type DecoderGraphFn func(ctx *context.Context, encoderHiddenStates, encoderAttentionMask, decoderInputIDs *graph.Node) *graph.Node
 
 // TransformerEncoderLayer creates a single transformer encoder layer.
 // Returns updated hidden states.
@@ -64,20 +66,16 @@ func TransformerEncoderLayer(ctx *context.Context, hiddenStates, attentionMask *
 }
 
 // TransformerDecoderLayer creates a single transformer decoder layer.
-// Returns updated hidden states and optionally new KV cache tensors.
+// Returns updated hidden states.
 //
-// TODO: Implement actual KV caching. Currently pastSelfK, pastSelfV, pastCrossK,
-// pastCrossV are accepted but not used. The function always returns nil for KV cache
-// outputs. This means autoregressive generation will recompute all past states.
+// Note: KV caching is not yet implemented. When PR #294 (layers/attention/kvcache.go)
+// lands, this function should be updated to use the unified KV cache abstraction.
+// Until then, autoregressive generation recomputes all past states.
 func TransformerDecoderLayer(
 	ctx *context.Context,
 	hiddenStates, encoderHiddenStates, encoderAttentionMask *graph.Node,
-	pastSelfK, pastSelfV, pastCrossK, pastCrossV *graph.Node,
 	config *ModelConfig,
-) (*graph.Node, *graph.Node, *graph.Node, *graph.Node, *graph.Node) {
-	// Acknowledge unused parameters until KV caching is implemented.
-	_, _, _, _ = pastSelfK, pastSelfV, pastCrossK, pastCrossV
-
+) *graph.Node {
 	ctx = ctx.In("decoder_layer")
 
 	// Self-attention with causal mask
@@ -115,8 +113,7 @@ func TransformerDecoderLayer(
 	hiddenStates = graph.Add(hiddenStates, ffOutput)
 	hiddenStates = layers.LayerNormalization(ctx.In("output_norm"), hiddenStates, -1).Done()
 
-	// For now, return nil for KV cache (to be implemented with actual caching)
-	return hiddenStates, nil, nil, nil, nil
+	return hiddenStates
 }
 
 // feedForward implements the feed-forward network in a transformer layer.
@@ -241,12 +238,14 @@ func BuildEncoderGraph(
 }
 
 // BuildDecoderGraph builds a complete decoder graph (single step).
+// Returns logits tensor of shape [batch_size, seq_len, vocab_size].
+//
+// Note: KV caching will be added when PR #294 lands. Currently recomputes all states.
 func BuildDecoderGraph(
 	ctx *context.Context,
 	encoderHiddenStates, encoderAttentionMask, decoderInputIDs *graph.Node,
-	pastKVCache []*graph.Node,
 	config *ModelConfig,
-) []*graph.Node {
+) *graph.Node {
 	ctx = ctx.In("decoder")
 	g := decoderInputIDs.Graph()
 
@@ -260,28 +259,11 @@ func BuildDecoderGraph(
 	hiddenStates = graph.Add(hiddenStates, posEncoding)
 
 	// Decoder layers
-	newKVCache := make([]*graph.Node, 0, config.NumLayers*4)
 	for i := 0; i < config.NumLayers; i++ {
 		layerCtx := ctx.Inf("layer_%d", i)
-
-		// Get past KV cache for this layer if available
-		var pastSelfK, pastSelfV, pastCrossK, pastCrossV *graph.Node
-		cacheOffset := i * 4
-		if len(pastKVCache) > cacheOffset+3 {
-			pastSelfK = pastKVCache[cacheOffset]
-			pastSelfV = pastKVCache[cacheOffset+1]
-			pastCrossK = pastKVCache[cacheOffset+2]
-			pastCrossV = pastKVCache[cacheOffset+3]
-		}
-
-		var newSelfK, newSelfV, newCrossK, newCrossV *graph.Node
-		hiddenStates, newSelfK, newSelfV, newCrossK, newCrossV = TransformerDecoderLayer(
-			layerCtx, hiddenStates, encoderHiddenStates, encoderAttentionMask,
-			pastSelfK, pastSelfV, pastCrossK, pastCrossV, config,
+		hiddenStates = TransformerDecoderLayer(
+			layerCtx, hiddenStates, encoderHiddenStates, encoderAttentionMask, config,
 		)
-
-		// Collect new KV cache
-		newKVCache = append(newKVCache, newSelfK, newSelfV, newCrossK, newCrossV)
 	}
 
 	// Final layer norm
@@ -290,14 +272,5 @@ func BuildDecoderGraph(
 	// LM head: project to vocabulary
 	logits := layers.Dense(ctx.In("lm_head"), hiddenStates, false, config.VocabSize)
 
-	// Return logits followed by KV cache
-	outputs := make([]*graph.Node, 0, 1+len(newKVCache))
-	outputs = append(outputs, logits)
-	for _, kv := range newKVCache {
-		if kv != nil {
-			outputs = append(outputs, kv)
-		}
-	}
-
-	return outputs
+	return logits
 }

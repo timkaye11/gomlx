@@ -144,11 +144,6 @@ func float16ToFloat32(h uint16) float32 {
 	return float16.Frombits(h).Float32()
 }
 
-// GetKVCacheShape returns the expected shape for a KV cache tensor.
-func GetKVCacheShape(batchSize, numHeads, seqLen, headDim int, dtype dtypes.DType) shapes.Shape {
-	return shapes.Make(dtype, batchSize, numHeads, seqLen, headDim)
-}
-
 // ValidateKVCacheShape checks if a tensor has a valid KV cache shape.
 func ValidateKVCacheShape(t *tensors.Tensor, expectedBatchSize, expectedNumHeads, expectedHeadDim int) bool {
 	shape := t.Shape()
