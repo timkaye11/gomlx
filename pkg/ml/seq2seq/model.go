@@ -18,21 +18,20 @@
 // like T5, BART, and other encoder-decoder architectures using GoMLX.
 //
 // This package supports:
-//   - Loading and running ONNX-exported seq2seq models
 //   - Encoder execution with hidden state extraction
 //   - Decoder execution with KV cache management
 //   - Greedy and sampling-based generation
+//   - On-device token selection for efficient generation
 //
 // Example usage:
 //
 //	model := seq2seq.NewModel(backend)
-//	model.LoadEncoder("encoder.onnx")
-//	model.LoadDecoderInit("decoder_init.onnx")
-//	model.LoadDecoder("decoder.onnx")
+//	seq2seq.CreateEncoderExec(model, encoderGraphFn)
+//	seq2seq.CreateDecoderExec(model, decoderGraphFn)
 //
-//	batch := model.NewBatch(inputIDs, attentionMask)
+//	batch, _ := model.NewBatch(inputIDs, attentionMask)
 //	batch.RunEncoder()
-//	output := batch.GenerateGreedy(maxLength)
+//	output, _ := batch.GenerateGreedy(maxLength)
 package seq2seq
 
 import (
