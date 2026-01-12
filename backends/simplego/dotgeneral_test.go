@@ -888,7 +888,7 @@ func TestDgCanUseSmallMatMul(t *testing.T) {
 		}
 	})
 
-	t.Run("NonFloat32Rejected", func(t *testing.T) {
+	t.Run("DTypeSupport", func(t *testing.T) {
 		params := &dotGeneralNodeData{
 			lhsContractingAxes: []int{1},
 			lhsBatchAxes:       []int{},
@@ -900,17 +900,28 @@ func TestDgCanUseSmallMatMul(t *testing.T) {
 			contractingSize:    8,
 		}
 
-		// Float64 should be rejected
-		lhsF64 := shapes.Make(dtypes.Float64, 4, 8)
-		rhsF64 := shapes.Make(dtypes.Float64, 8, 6)
-		assert.False(t, dgCanUseSmallMatMul(dtypes.Float64, lhsF64, rhsF64, params),
-			"Should not use SmallMatMul for Float64")
+		// All numeric dtypes should be supported
+		supportedDTypes := []dtypes.DType{
+			dtypes.Float32, dtypes.Float64,
+			dtypes.BFloat16, dtypes.Float16,
+			dtypes.Int8, dtypes.Int16, dtypes.Int32, dtypes.Int64,
+			dtypes.Uint8, dtypes.Uint16, dtypes.Uint32, dtypes.Uint64,
+		}
+		for _, dtype := range supportedDTypes {
+			lhs := shapes.Make(dtype, 4, 8)
+			rhs := shapes.Make(dtype, 8, 6)
+			assert.True(t, dgCanUseSmallMatMul(dtype, lhs, rhs, params),
+				"Should use SmallMatMul for %s", dtype)
+		}
 
-		// BFloat16 should also be rejected
-		lhsBF16 := shapes.Make(dtypes.BFloat16, 4, 8)
-		rhsBF16 := shapes.Make(dtypes.BFloat16, 8, 6)
-		assert.False(t, dgCanUseSmallMatMul(dtypes.BFloat16, lhsBF16, rhsBF16, params),
-			"Should not use SmallMatMul for BFloat16")
+		// Non-numeric dtypes should be rejected
+		unsupportedDTypes := []dtypes.DType{dtypes.Bool, dtypes.Complex64, dtypes.Complex128}
+		for _, dtype := range unsupportedDTypes {
+			lhs := shapes.Make(dtype, 4, 8)
+			rhs := shapes.Make(dtype, 8, 6)
+			assert.False(t, dgCanUseSmallMatMul(dtype, lhs, rhs, params),
+				"Should not use SmallMatMul for %s", dtype)
+		}
 	})
 
 	t.Run("NonMatMulOrderRejected", func(t *testing.T) {
