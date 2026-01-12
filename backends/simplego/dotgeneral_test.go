@@ -197,12 +197,12 @@ func TestDotGeneral_SmallNormalize(t *testing.T) {
 		for i := range sourceFlat {
 			sourceFlat[i] = float64(i + 1)
 		}
-		normalizeFn := dotGeneralNormalizeShapeDTypeMap.Get(dtype).(func(backend *Backend, source *Buffer, contractingAxes, batchAxes []int, batchSize, crossSize, contractingSize int) *Buffer)
+		normalizeFn := dotGeneralNormalizeShapeDTypeMap.Get(dtype).(func(backend *Backend, source *Buffer, info *dgNormalizationInfo, batchSize, crossSize, contractingSize int) *Buffer)
+		info := dgNormalizePrepare(source.shape, contractingAxes, batchAxes)
 		output := normalizeFn(
 			backend.(*Backend),
 			source,
-			contractingAxes,
-			batchAxes,
+			info,
 			batchSize,
 			crossSize,
 			contractingSize,
@@ -231,12 +231,12 @@ func TestDotGeneral_SmallNormalize(t *testing.T) {
 		for i := range sourceFlat {
 			sourceFlat[i] = float32(i + 1)
 		}
-		normalizeFn := dotGeneralNormalizeShapeDTypeMap.Get(dtype).(func(backend *Backend, source *Buffer, contractingAxes, batchAxes []int, batchSize, crossSize, contractingSize int) *Buffer)
+		normalizeFn := dotGeneralNormalizeShapeDTypeMap.Get(dtype).(func(backend *Backend, source *Buffer, info *dgNormalizationInfo, batchSize, crossSize, contractingSize int) *Buffer)
+		info := dgNormalizePrepare(source.shape, contractingAxes, batchAxes)
 		output := normalizeFn(
 			backend.(*Backend),
 			source,
-			contractingAxes,
-			batchAxes,
+			info,
 			batchSize,
 			crossSize,
 			contractingSize,
@@ -274,12 +274,12 @@ func TestDotGeneral_SmallNormalize(t *testing.T) {
 		sourceIf, _, err := backend.NewSharedBuffer(0, sourceShape)
 		require.NoError(t, err)
 		source := sourceIf.(*Buffer)
-		normalizeFn := dotGeneralNormalizeShapeDTypeMap.Get(dtype).(func(backend *Backend, source *Buffer, contractingAxes, batchAxes []int, batchSize, crossSize, contractingSize int) *Buffer)
+		normalizeFn := dotGeneralNormalizeShapeDTypeMap.Get(dtype).(func(backend *Backend, source *Buffer, info *dgNormalizationInfo, batchSize, crossSize, contractingSize int) *Buffer)
+		info := dgNormalizePrepare(source.shape, contractingAxes, batchAxes)
 		output := normalizeFn(
 			backend.(*Backend),
 			source,
-			contractingAxes,
-			batchAxes,
+			info,
 			batchSize,
 			crossSize,
 			contractingSize,
@@ -288,11 +288,11 @@ func TestDotGeneral_SmallNormalize(t *testing.T) {
 
 		// If we invert the contracting axes, we need the transposition, and normalizeFn must handle it.
 		contractingAxes = []int{3, 2}
+		info = dgNormalizePrepare(source.shape, contractingAxes, batchAxes)
 		output = normalizeFn(
 			backend.(*Backend),
 			source,
-			contractingAxes,
-			batchAxes,
+			info,
 			batchSize,
 			crossSize,
 			contractingSize,
@@ -368,71 +368,66 @@ func TestDotGeneral_Exec(t *testing.T) {
 		goBackend.dotGeneralForceExecutionPath = autoSelectPath
 	}()
 
-	for _, execPath := range []dotGeneralExecutionPath{normalizedPath, blockedPath, checkPath} {
+	for _, execPath := range []dotGeneralExecutionPath{normalizedPath, blockedPath, smallMatMulPath, checkPath} {
 		// Force a specific execution path: so we exercise the corresponding algorithm irrespective of the actual size:
 		// it may not be efficient for the size, but it should be correct in all sizes.
 		goBackend.dotGeneralForceExecutionPath = execPath
-		var testName string
-		switch execPath {
-		case normalizedPath:
-			testName = "DotGeneral_normalized_version"
-		case blockedPath:
-			testName = "DotGeneral_blocked_version"
-		case checkPath:
-			testName = "DotGeneral_check_version"
-		default:
-			t.Fatalf("Unknown execution path: %d", execPath)
-		}
-		t.Run(testName, func(t *testing.T) {
-			// Larger example, with multiple axes.
-			y0 := graph.MustExecOnce(backend, func(lhs, rhs *graph.Node) *graph.Node {
-				return graph.DotGeneral(lhs, []int{1}, []int{3, 0}, rhs, []int{1}, []int{0, 2})
-			},
-				tensors.FromFlatDataAndDimensions(xslices.Iota(float32(1), 2*3*1*5), 2, 3, 1, 5),
-				tensors.FromFlatDataAndDimensions(xslices.Iota(float32(1), 5*3*2*4), 5, 3, 2, 4),
-			)
-			fmt.Printf("\ty0=%s\n", y0)
-			want := [][][][]float32{
-				{
-					{{242, 260, 278, 296}},
-					{{899, 962, 1025, 1088}},
-				}, {
-					{{773, 794, 815, 836}},
-					{{2522, 2588, 2654, 2720}},
-				}, {
-					{{1448, 1472, 1496, 1520}},
-					{{4289, 4358, 4427, 4496}},
-				}, {
-					{{2267, 2294, 2321, 2348}},
-					{{6200, 6272, 6344, 6416}},
-				}, {
-					{{3230, 3260, 3290, 3320}},
-					{{8255, 8330, 8405, 8480}},
-				}}
-			require.Equal(t, want, y0.Value())
+		t.Run(execPath.String(), func(t *testing.T) {
+			t.Run("Float32", func(t *testing.T) {
+				// Larger example, with multiple axes.
+				y0 := graph.MustExecOnce(backend, func(lhs, rhs *graph.Node) *graph.Node {
+					return graph.DotGeneral(lhs, []int{1}, []int{3, 0}, rhs, []int{1}, []int{0, 2})
+				},
+					tensors.FromFlatDataAndDimensions(xslices.Iota(float32(1), 2*3*1*5), 2, 3, 1, 5),
+					tensors.FromFlatDataAndDimensions(xslices.Iota(float32(1), 5*3*2*4), 5, 3, 2, 4),
+				)
+				fmt.Printf("\ty0=%s\n", y0)
+				want := [][][][]float32{
+					{
+						{{242, 260, 278, 296}},
+						{{899, 962, 1025, 1088}},
+					}, {
+						{{773, 794, 815, 836}},
+						{{2522, 2588, 2654, 2720}},
+					}, {
+						{{1448, 1472, 1496, 1520}},
+						{{4289, 4358, 4427, 4496}},
+					}, {
+						{{2267, 2294, 2321, 2348}},
+						{{6200, 6272, 6344, 6416}},
+					}, {
+						{{3230, 3260, 3290, 3320}},
+						{{8255, 8330, 8405, 8480}},
+					}}
+				require.Equal(t, want, y0.Value())
+			})
 
 			// Axis transposition example:
-			y1 := graph.MustExecOnce(backend, func(g *graph.Graph) *graph.Node {
-				lhs := graph.MulScalar(graph.OnePlus(graph.IotaFull(g, shapes.Make(F32, 2, 1, 3))), 1)
-				rhs := graph.Ones(g, shapes.Make(F32, 1, 3, 2))
-				return graph.DotGeneral(lhs, []int{1}, []int{2, 0}, rhs, []int{0}, []int{1, 2})
+			t.Run("AxisTransposition", func(t *testing.T) {
+				y1 := graph.MustExecOnce(backend, func(g *graph.Graph) *graph.Node {
+					lhs := graph.MulScalar(graph.OnePlus(graph.IotaFull(g, shapes.Make(F32, 2, 1, 3))), 1)
+					rhs := graph.Ones(g, shapes.Make(F32, 1, 3, 2))
+					return graph.DotGeneral(lhs, []int{1}, []int{2, 0}, rhs, []int{0}, []int{1, 2})
+				})
+				fmt.Printf("\ty1=%s\n", y1)
+				require.NoError(t, y1.Shape().Check(F32, 3, 2))
+				want1 := [][]float32{{1, 4}, {2, 5}, {3, 6}}
+				require.Equal(t, want1, y1.Value())
 			})
-			fmt.Printf("\ty1=%s\n", y1)
-			require.NoError(t, y1.Shape().Check(F32, 3, 2))
-			want1 := [][]float32{{1, 4}, {2, 5}, {3, 6}}
-			require.Equal(t, want1, y1.Value())
 
 			// A very large example: expected value computed using XLA.
-			y3 := graph.MustExecOnce(backend, func(g *graph.Graph) *graph.Node {
-				lhs := graph.MulScalar(graph.OnePlus(graph.IotaFull(g, shapes.Make(dtypes.F64, 16, 13, 384))), 1e-5)
-				rhs := graph.Ones(g, shapes.Make(dtypes.F64, 384, 1536))
-				out := graph.DotGeneral(
-					lhs, []int{2}, nil,
-					rhs, []int{0}, nil)
-				return graph.Gather(out, graph.Const(g, [][]int32{{0, 0, 0}}))
+			t.Run("VeryLarge", func(t *testing.T) {
+				y3 := graph.MustExecOnce(backend, func(g *graph.Graph) *graph.Node {
+					lhs := graph.MulScalar(graph.OnePlus(graph.IotaFull(g, shapes.Make(dtypes.F64, 16, 13, 384))), 1e-5)
+					rhs := graph.Ones(g, shapes.Make(dtypes.F64, 384, 1536))
+					out := graph.DotGeneral(
+						lhs, []int{2}, nil,
+						rhs, []int{0}, nil)
+					return graph.Gather(out, graph.Const(g, [][]int32{{0, 0, 0}}))
+				})
+				fmt.Printf("\ty3=%s\n", y3)
+				require.InDelta(t, 0.7392, tensors.MustCopyFlatData[float64](y3)[0], 1e-4)
 			})
-			fmt.Printf("\ty3=%s\n", y3)
-			require.InDelta(t, 0.7392, tensors.MustCopyFlatData[float64](y3)[0], 1e-4)
 
 			// BFloat16 example.
 			t.Run("BFloat16", func(t *testing.T) {
@@ -451,17 +446,17 @@ func TestDotGeneral_Exec(t *testing.T) {
 			// Do not run the larger tests if running -test.short: they will break Github
 			// tests:
 			if testing.Short() {
-				fmt.Printf("\tSkipping larger tests for %s in -short mode\n", testName)
+				fmt.Printf("\tSkipping larger tests for %s in -short mode\n", execPath)
 				return
 			}
 
 			// From DotGeneral parameters taken from LLM models that not working during development:
 			t.Run("LLM_1-parallel-requests", func(t *testing.T) {
-				lhs, err := tensors.Load("dotgeneral_lhs_test.bin")
+				lhs, err := tensors.Load("dotgeneral_test_lhs.bin")
 				require.NoError(t, err)
-				rhs, err := tensors.Load("dotgeneral_rhs_test.bin")
+				rhs, err := tensors.Load("dotgeneral_test_rhs.bin")
 				require.NoError(t, err)
-				want, err := tensors.Load("dotgeneral_out_test.bin")
+				want, err := tensors.Load("dotgeneral_test_out.bin")
 				require.NoError(t, err)
 				fmt.Printf("\tlhs=%s, rhs=%s\n", lhs.Shape(), rhs.Shape())
 				exec := graph.MustNewExec(backend, func(lhs, rhs *graph.Node) *graph.Node {
@@ -492,11 +487,11 @@ func TestDotGeneral_Exec(t *testing.T) {
 				fmt.Printf("\tnumCalls=%d\n", n)
 			})
 			t.Run("LLM_2", func(t *testing.T) {
-				lhs, err := tensors.Load("dotgeneral_lhs_2_test.bin")
+				lhs, err := tensors.Load("dotgeneral_test_lhs_2.bin")
 				require.NoError(t, err)
-				rhs, err := tensors.Load("dotgeneral_rhs_2_test.bin")
+				rhs, err := tensors.Load("dotgeneral_test_rhs_2.bin")
 				require.NoError(t, err)
-				want, err := tensors.Load("dotgeneral_out_2_test.bin")
+				want, err := tensors.Load("dotgeneral_test_out_2.bin")
 				require.NoError(t, err)
 				fmt.Printf("\tlhs=%s, rhs=%s\n", lhs.Shape(), rhs.Shape())
 				got := graph.MustExecOnce(backend, func(lhs, rhs *graph.Node) *graph.Node {
@@ -507,11 +502,11 @@ func TestDotGeneral_Exec(t *testing.T) {
 				requireSameTensorsFloat32(t, want, got, 1e-3)
 			})
 			t.Run("LLM_2_bfloat16", func(t *testing.T) {
-				lhs, err := tensors.Load("dotgeneral_lhs_2_test.bin")
+				lhs, err := tensors.Load("dotgeneral_test_lhs_2.bin")
 				require.NoError(t, err)
-				rhs, err := tensors.Load("dotgeneral_rhs_2_test.bin")
+				rhs, err := tensors.Load("dotgeneral_test_rhs_2.bin")
 				require.NoError(t, err)
-				want, err := tensors.Load("dotgeneral_out_2_test.bin")
+				want, err := tensors.Load("dotgeneral_test_out_2.bin")
 				require.NoError(t, err)
 				fmt.Printf("\tlhs=%s, rhs=%s\n", lhs.Shape(), rhs.Shape())
 				got := graph.MustExecOnce(backend, func(lhs, rhs *graph.Node) *graph.Node {
@@ -681,12 +676,14 @@ func TestDotGeneral_PreBlockedCorrectness(t *testing.T) {
 	wantResult := graph.MustExecOnce(goBackend, func(lhs, rhs *graph.Node) *graph.Node {
 		return graph.DotGeneral(lhs, []int{1}, nil, rhs, []int{0}, nil)
 	}, lhs, rhs)
+	fmt.Printf("WantResult: %s\n", wantResult)
 
 	// Now compute with blocked path (which may use pre-blocking for constant RHS)
 	goBackend.dotGeneralForceExecutionPath = blockedPath
 	gotResult := graph.MustExecOnce(goBackend, func(lhs, rhs *graph.Node) *graph.Node {
 		return graph.DotGeneral(lhs, []int{1}, nil, rhs, []int{0}, nil)
 	}, lhs, rhs)
+	fmt.Printf("GotResult: %s\n", gotResult)
 
 	// Reset to default (auto-select)
 	goBackend.dotGeneralForceExecutionPath = autoSelectPath
@@ -815,8 +812,8 @@ func TestIsMatMulOrder(t *testing.T) {
 	}
 }
 
-// TestDgCanUseSmallMatMul tests the build-time SmallMatMul path selection.
-func TestDgCanUseSmallMatMul(t *testing.T) {
+// TestDgUseSmallMatMul tests the build-time SmallMatMul path selection.
+func TestDgUseSmallMatMul(t *testing.T) {
 	t.Run("ThresholdBoundaries", func(t *testing.T) {
 		testCases := []struct {
 			name            string
@@ -853,11 +850,11 @@ func TestDgCanUseSmallMatMul(t *testing.T) {
 			// M=1 with large batch should be rejected
 			{"M_equals_1_large_batch", 100, 1, 256, 512, false},
 			// N (rhsCrossSize) at threshold (256)
-			{"rhsCrossSize_at_threshold", 1, 10, 256, 64, true},
+			{"rhsCrossSize_at_threshold", 1, 10, smallMatMulMaxRhsCrossSize, 64, true},
 			// N over threshold
-			{"rhsCrossSize_over_threshold", 1, 10, 257, 64, false},
+			{"rhsCrossSize_over_threshold", 1, 10, smallMatMulMaxRhsCrossSize + 1, 64, false},
 			// Combined thresholds: both K and N at their limits
-			{"K_and_N_both_at_threshold", 1, 10, 256, 128, true},
+			{"K_and_N_both_at_threshold", 1, 10, smallMatMulMaxRhsCrossSize, 128, true},
 			// Combined thresholds: K at limit, N over
 			{"K_at_threshold_N_over", 1, 10, 257, 128, false},
 			// Combined thresholds: K over, N at limit
@@ -880,7 +877,7 @@ func TestDgCanUseSmallMatMul(t *testing.T) {
 					contractingSize:    tc.contractingSize,
 				}
 
-				got := dgCanUseSmallMatMul(dtypes.Float32, lhsShape, rhsShape, params)
+				got := dgUseSmallMatMul(dtypes.Float32, lhsShape, rhsShape, params)
 				assert.Equal(t, tc.want, got,
 					"dgCanUseSmallMatMul with batch=%d, M=%d, N=%d, K=%d",
 					tc.batchSize, tc.lhsCrossSize, tc.rhsCrossSize, tc.contractingSize)
@@ -910,7 +907,7 @@ func TestDgCanUseSmallMatMul(t *testing.T) {
 		for _, dtype := range supportedDTypes {
 			lhs := shapes.Make(dtype, 4, 8)
 			rhs := shapes.Make(dtype, 8, 6)
-			assert.True(t, dgCanUseSmallMatMul(dtype, lhs, rhs, params),
+			assert.True(t, dgUseSmallMatMul(dtype, lhs, rhs, params),
 				"Should use SmallMatMul for %s", dtype)
 		}
 
@@ -919,7 +916,7 @@ func TestDgCanUseSmallMatMul(t *testing.T) {
 		for _, dtype := range unsupportedDTypes {
 			lhs := shapes.Make(dtype, 4, 8)
 			rhs := shapes.Make(dtype, 8, 6)
-			assert.False(t, dgCanUseSmallMatMul(dtype, lhs, rhs, params),
+			assert.False(t, dgUseSmallMatMul(dtype, lhs, rhs, params),
 				"Should not use SmallMatMul for %s", dtype)
 		}
 	})
@@ -940,7 +937,7 @@ func TestDgCanUseSmallMatMul(t *testing.T) {
 			contractingSize:    8,
 		}
 
-		assert.False(t, dgCanUseSmallMatMul(dtypes.Float32, lhsShape, rhsShape, params),
+		assert.False(t, dgUseSmallMatMul(dtypes.Float32, lhsShape, rhsShape, params),
 			"Should not use SmallMatMul with non-matmul axis order")
 	})
 }
