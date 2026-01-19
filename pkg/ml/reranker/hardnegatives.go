@@ -150,14 +150,14 @@ func InBatchNegatives(scores [][]float32, numNegatives int) [][]int {
 	batchSize := len(scores)
 	result := make([][]int, batchSize)
 
-	for i := range batchSize {
+	for i := 0; i < batchSize; i++ {
 		// Collect (index, score) pairs for all non-diagonal entries
 		type scoredIdx struct {
 			idx   int
 			score float32
 		}
 		candidates := make([]scoredIdx, 0, batchSize-1)
-		for j := range batchSize {
+		for j := 0; j < batchSize; j++ {
 			if i != j { // Exclude the true positive
 				candidates = append(candidates, scoredIdx{idx: j, score: scores[i][j]})
 			}

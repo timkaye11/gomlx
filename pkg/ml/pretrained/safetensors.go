@@ -277,16 +277,38 @@ func (st *SafeTensorsFile) LoadTensor(name string) (*tensors.Tensor, error) {
 		return nil, errors.Errorf("tensor %q not found in SafeTensors file", name)
 	}
 
+	// Validate data offsets BEFORE allocating memory to prevent OOM attacks
+	if info.DataStart < 0 {
+		return nil, errors.Errorf("tensor %q has negative DataStart offset: %d", name, info.DataStart)
+	}
+	if info.DataEnd < info.DataStart {
+		return nil, errors.Errorf("tensor %q has invalid offsets: DataEnd (%d) < DataStart (%d)",
+			name, info.DataEnd, info.DataStart)
+	}
+
 	dataSize := info.DataEnd - info.DataStart
+
+	if st.data != nil {
+		// Validate bounds for in-memory data
+		start := st.dataOffset + info.DataStart
+		end := st.dataOffset + info.DataEnd
+		if end > int64(len(st.data)) {
+			return nil, errors.Errorf("tensor %q data extends beyond file (offset %d + end %d > length %d)",
+				name, st.dataOffset, info.DataEnd, len(st.data))
+		}
+		if start < 0 || end < 0 {
+			return nil, errors.Errorf("tensor %q has invalid computed offsets: start=%d, end=%d",
+				name, start, end)
+		}
+	}
+
+	// Safe to allocate now that we've validated offsets
 	tensorData := make([]byte, dataSize)
 
 	if st.data != nil {
 		// Data is in memory
 		start := st.dataOffset + info.DataStart
 		end := st.dataOffset + info.DataEnd
-		if end > int64(len(st.data)) {
-			return nil, errors.Errorf("tensor %q data extends beyond file", name)
-		}
 		copy(tensorData, st.data[start:end])
 	} else if st.file != nil {
 		// Read from file
@@ -353,22 +375,38 @@ func tensorFromRawBytes(shape shapes.Shape, data []byte) (*tensors.Tensor, error
 }
 
 // tensorFromBytes creates a tensor from raw bytes for a specific Go type.
+// Note: SafeTensors format uses little-endian encoding. This function assumes
+// the system is little-endian. On big-endian systems, byte swapping would be required.
 func tensorFromBytes[T dtypes.Supported](shape shapes.Shape, data []byte) *tensors.Tensor {
 	numElements := shape.Size()
+	copied := make([]T, numElements)
+
+	// Handle empty tensors (zero elements) gracefully
+	if numElements == 0 || len(data) == 0 {
+		return tensors.FromFlatDataAndDimensions(copied, shape.Dimensions...)
+	}
+
 	// Use unsafe to reinterpret bytes as the target type slice
 	slice := unsafe.Slice((*T)(unsafe.Pointer(&data[0])), numElements)
 	// Make a copy to avoid issues with the original byte slice
-	copied := make([]T, numElements)
 	copy(copied, slice)
 	return tensors.FromFlatDataAndDimensions(copied, shape.Dimensions...)
 }
 
 // tensorFromBytesF16 creates a Float16 tensor from raw bytes.
+// Note: SafeTensors format uses little-endian encoding. This function assumes
+// the system is little-endian. On big-endian systems, byte swapping would be required.
 func tensorFromBytesF16(shape shapes.Shape, data []byte) *tensors.Tensor {
 	numElements := shape.Size()
+	f16Slice := make([]float16.Float16, numElements)
+
+	// Handle empty tensors (zero elements) gracefully
+	if numElements == 0 || len(data) == 0 {
+		return tensors.FromFlatDataAndDimensions(f16Slice, shape.Dimensions...)
+	}
+
 	// Float16 is stored as uint16 internally
 	u16Slice := unsafe.Slice((*uint16)(unsafe.Pointer(&data[0])), numElements)
-	f16Slice := make([]float16.Float16, numElements)
 	for i, v := range u16Slice {
 		f16Slice[i] = float16.Frombits(v)
 	}
@@ -376,11 +414,19 @@ func tensorFromBytesF16(shape shapes.Shape, data []byte) *tensors.Tensor {
 }
 
 // tensorFromBytesBF16 creates a BFloat16 tensor from raw bytes.
+// Note: SafeTensors format uses little-endian encoding. This function assumes
+// the system is little-endian. On big-endian systems, byte swapping would be required.
 func tensorFromBytesBF16(shape shapes.Shape, data []byte) *tensors.Tensor {
 	numElements := shape.Size()
+	bf16Slice := make([]bfloat16.BFloat16, numElements)
+
+	// Handle empty tensors (zero elements) gracefully
+	if numElements == 0 || len(data) == 0 {
+		return tensors.FromFlatDataAndDimensions(bf16Slice, shape.Dimensions...)
+	}
+
 	// BFloat16 is stored as uint16 internally
 	u16Slice := unsafe.Slice((*uint16)(unsafe.Pointer(&data[0])), numElements)
-	bf16Slice := make([]bfloat16.BFloat16, numElements)
 	for i, v := range u16Slice {
 		bf16Slice[i] = bfloat16.FromBits(v)
 	}

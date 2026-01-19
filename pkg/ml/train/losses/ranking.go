@@ -423,12 +423,9 @@ func ApproxNDCGLoss(labels, predictions []*Node, sigma float64) *Node {
 
 	// Compute DCG with soft ranks
 	// DCG = sum_i (2^rel_i - 1) / log2(1 + soft_rank_i)
-	gains := OneMinus(Pow(Scalar(g, dtype, 2.0), Neg(relevance))) // 2^rel - 1 = 1 - 2^(-rel) for stability when rel=0
-	gains = Mul(relevance, relevance) // Simple: rel^2 as gain, works for binary relevance
-
-	// Actually use standard gain: (2^rel - 1)
+	// Standard NDCG gain formula: 2^rel - 1
 	twoConst := Scalar(g, dtype, 2.0)
-	gains = OneMinus(Pow(twoConst, relevance))
+	gains := OneMinus(Pow(twoConst, relevance))
 	gains = Neg(gains) // 2^rel - 1
 
 	// Discounts: 1 / log2(1 + rank)

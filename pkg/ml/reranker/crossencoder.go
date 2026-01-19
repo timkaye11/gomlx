@@ -15,9 +15,9 @@ import (
 	"fmt"
 
 	"github.com/gomlx/gomlx/internal/exceptions"
+	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/shapes"
-	"github.com/gomlx/gomlx/pkg/core/dtypes"
 	"github.com/gomlx/gomlx/pkg/ml/context"
 	"github.com/gomlx/gomlx/pkg/ml/layers"
 	"github.com/gomlx/gomlx/pkg/ml/layers/activations"
@@ -278,6 +278,12 @@ func (b *CrossEncoderBuilder) Pooling(pooling PoolingType) *CrossEncoderBuilder 
 // Returns:
 //   - scores: Relevance scores of shape [batch_size, 1]
 func (b *CrossEncoderBuilder) Done(tokenIDs, attentionMask, tokenTypeIDs *Node) *Node {
+	// Validate that HiddenDim is evenly divisible by NumHeads
+	if b.config.HiddenDim%b.config.NumHeads != 0 {
+		exceptions.Panicf("HiddenDim (%d) must be evenly divisible by NumHeads (%d), got remainder %d",
+			b.config.HiddenDim, b.config.NumHeads, b.config.HiddenDim%b.config.NumHeads)
+	}
+
 	hidden := b.Encode(tokenIDs, attentionMask, tokenTypeIDs)
 	pooled := b.Pool(hidden, attentionMask)
 	return b.Head(pooled)
@@ -418,9 +424,9 @@ func (b *CrossEncoderBuilder) Pool(hidden, attentionMask *Node) *Node {
 		maskFloat := ConvertDType(attentionMask, hidden.DType())
 		maskExpanded := ExpandDims(maskFloat, -1) // [batch, seq_len, 1]
 		masked := Mul(hidden, maskExpanded)
-		summed := ReduceSum(masked, 1)                        // [batch, hidden_dim]
-		counts := ReduceSum(maskFloat, -1)                    // [batch]
-		counts = AddScalar(counts, 1e-9)                      // Avoid division by zero
+		summed := ReduceSum(masked, 1)     // [batch, hidden_dim]
+		counts := ReduceSum(maskFloat, -1) // [batch]
+		counts = AddScalar(counts, 1e-6)   // Avoid division by zero
 		return Div(summed, ExpandDims(counts, -1))
 
 	case PoolingMax:

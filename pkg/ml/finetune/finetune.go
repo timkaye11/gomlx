@@ -11,6 +11,7 @@ package finetune
 import (
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/context"
@@ -66,8 +67,8 @@ func FreezeScope(ctx *context.Context, scope string) int {
 	if !strings.HasPrefix(scope, "/") {
 		scope = "/" + scope
 	}
-	// Match anything within this scope
-	pattern := scope + "/*"
+	// Match anything within this scope, including all descendants recursively
+	pattern := scope + "/**"
 	return FreezeByPattern(ctx, pattern)
 }
 
@@ -77,7 +78,8 @@ func UnfreezeScope(ctx *context.Context, scope string) int {
 	if !strings.HasPrefix(scope, "/") {
 		scope = "/" + scope
 	}
-	pattern := scope + "/*"
+	// Match anything within this scope, including all descendants recursively
+	pattern := scope + "/**"
 	return UnfreezeByPattern(ctx, pattern)
 }
 
@@ -289,8 +291,14 @@ const LRMultiplierKey = "lr_multiplier"
 //	    {Pattern: "*/head/*", LRMultiplier: 1.0},     // Head trains at full LR
 //	})
 //
-// Note: For this to take effect, the optimizer must support discriminative learning rates.
-// See the optimizers package for details.
+// IMPORTANT: This feature requires manual integration with your optimizer.
+// Currently, no built-in GoMLX optimizers automatically read these multipliers.
+// To use discriminative learning rates, you must:
+//  1. Call GetLRMultiplier(ctx, varPath) for each variable during optimization
+//  2. Multiply the base learning rate by the returned multiplier
+//  3. Apply the scaled learning rate to that variable's gradient update
+//
+// This is planned for future implementation in the standard optimizers.
 func SetDiscriminativeLR(ctx *context.Context, groups []LayerGroup) {
 	// Store the groups in context for the optimizer to read
 	ctx.SetParam(LRMultiplierKey, groups)
@@ -298,6 +306,10 @@ func SetDiscriminativeLR(ctx *context.Context, groups []LayerGroup) {
 
 // GetLRMultiplier returns the learning rate multiplier for a given variable path.
 // If no matching group is found, returns 1.0 (no modification).
+//
+// IMPORTANT: This function only retrieves the stored multiplier values.
+// You must manually integrate this into your optimizer's gradient update logic.
+// See SetDiscriminativeLR for details on how to use this feature.
 func GetLRMultiplier(ctx *context.Context, varPath string) float64 {
 	groups := context.GetParamOr(ctx, LRMultiplierKey, ([]LayerGroup)(nil))
 	if groups == nil {
@@ -340,9 +352,13 @@ type GradualUnfreezeConfig struct {
 func GradualUnfreezeHook(ctx *context.Context, config GradualUnfreezeConfig) train.OnStepFn {
 	// Track which steps we've already processed
 	processedSteps := make(map[int]bool)
+	var mu sync.Mutex
 
 	return func(loop *train.Loop, _ []*tensors.Tensor) error {
 		currentStep := loop.LoopStep
+
+		mu.Lock()
+		defer mu.Unlock()
 
 		// Check each threshold in the schedule
 		for step, patterns := range config.Schedule {

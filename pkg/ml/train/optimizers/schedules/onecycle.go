@@ -235,7 +235,10 @@ func (c *OneCycleConfig) Done() {
 	warmupProgress = MinScalar(warmupProgress, 1.0)
 
 	// Warmup LR: initial_lr + (max_lr - initial_lr) * progress
-	// Using cosine for warmup as well (matches PyTorch behavior)
+	// NOTE: This implementation applies the annealing strategy to the warmup phase.
+	// This differs from PyTorch's OneCycleLR, which always uses linear warmup
+	// regardless of the anneal_strategy parameter. Here, when anneal_strategy="cos",
+	// warmup also uses cosine annealing for a smoother acceleration.
 	var warmupLR *Node
 	if c.annealStrategy == AnnealCos {
 		// Cosine warmup: smoother start

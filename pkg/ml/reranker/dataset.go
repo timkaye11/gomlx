@@ -3,6 +3,8 @@
 package reranker
 
 import (
+	"fmt"
+
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	"github.com/gomlx/gomlx/pkg/ml/train"
 )
@@ -198,63 +200,7 @@ func (d *PointwiseDataset) DatasetType() DatasetType {
 // encodeQueryDoc combines query and document tokens into BERT format.
 // Format: [CLS] query [SEP] document [SEP] [PAD]...
 func (d *PointwiseDataset) encodeQueryDoc(query, doc []int32) (tokenIDs, attentionMask, tokenTypeIDs []int32) {
-	tokenIDs = make([]int32, d.maxSeqLen)
-	attentionMask = make([]int32, d.maxSeqLen)
-	tokenTypeIDs = make([]int32, d.maxSeqLen)
-
-	// Start with [CLS]
-	idx := 0
-	tokenIDs[idx] = d.clsTokenID
-	attentionMask[idx] = 1
-	tokenTypeIDs[idx] = 0
-	idx++
-
-	// Add query tokens
-	for _, t := range query {
-		if idx >= d.maxSeqLen-2 { // Leave room for [SEP] tokens
-			break
-		}
-		tokenIDs[idx] = t
-		attentionMask[idx] = 1
-		tokenTypeIDs[idx] = 0
-		idx++
-	}
-
-	// Add [SEP] after query
-	if idx < d.maxSeqLen {
-		tokenIDs[idx] = d.sepTokenID
-		attentionMask[idx] = 1
-		tokenTypeIDs[idx] = 0
-		idx++
-	}
-
-	// Add document tokens
-	for _, t := range doc {
-		if idx >= d.maxSeqLen-1 { // Leave room for final [SEP]
-			break
-		}
-		tokenIDs[idx] = t
-		attentionMask[idx] = 1
-		tokenTypeIDs[idx] = 1 // Different segment for document
-		idx++
-	}
-
-	// Add final [SEP]
-	if idx < d.maxSeqLen {
-		tokenIDs[idx] = d.sepTokenID
-		attentionMask[idx] = 1
-		tokenTypeIDs[idx] = 1
-		idx++
-	}
-
-	// Pad the rest
-	for ; idx < d.maxSeqLen; idx++ {
-		tokenIDs[idx] = d.padTokenID
-		attentionMask[idx] = 0
-		tokenTypeIDs[idx] = 0
-	}
-
-	return tokenIDs, attentionMask, tokenTypeIDs
+	return encodeQueryDocPair(query, doc, d.maxSeqLen, d.clsTokenID, d.sepTokenID, d.padTokenID)
 }
 
 // PairwiseDataset is a simple in-memory pairwise dataset for ranking.
@@ -367,18 +313,30 @@ func (d *PairwiseDataset) DatasetType() DatasetType {
 
 // encodeQueryDoc combines query and document tokens into BERT format.
 func (d *PairwiseDataset) encodeQueryDoc(query, doc []int32) (tokenIDs, attentionMask, tokenTypeIDs []int32) {
-	tokenIDs = make([]int32, d.maxSeqLen)
-	attentionMask = make([]int32, d.maxSeqLen)
-	tokenTypeIDs = make([]int32, d.maxSeqLen)
+	return encodeQueryDocPair(query, doc, d.maxSeqLen, d.clsTokenID, d.sepTokenID, d.padTokenID)
+}
 
+// Helper functions
+
+// encodeQueryDocPair combines query and document tokens into BERT format.
+// Format: [CLS] query [SEP] document [SEP] [PAD]...
+//
+// This shared helper is used by both PointwiseDataset and PairwiseDataset to avoid code duplication.
+func encodeQueryDocPair(query, doc []int32, maxSeqLen int, clsTokenID, sepTokenID, padTokenID int32) (tokenIDs, attentionMask, tokenTypeIDs []int32) {
+	tokenIDs = make([]int32, maxSeqLen)
+	attentionMask = make([]int32, maxSeqLen)
+	tokenTypeIDs = make([]int32, maxSeqLen)
+
+	// Start with [CLS]
 	idx := 0
-	tokenIDs[idx] = d.clsTokenID
+	tokenIDs[idx] = clsTokenID
 	attentionMask[idx] = 1
 	tokenTypeIDs[idx] = 0
 	idx++
 
+	// Add query tokens
 	for _, t := range query {
-		if idx >= d.maxSeqLen-2 {
+		if idx >= maxSeqLen-2 { // Leave room for [SEP] tokens
 			break
 		}
 		tokenIDs[idx] = t
@@ -387,40 +345,42 @@ func (d *PairwiseDataset) encodeQueryDoc(query, doc []int32) (tokenIDs, attentio
 		idx++
 	}
 
-	if idx < d.maxSeqLen {
-		tokenIDs[idx] = d.sepTokenID
+	// Add [SEP] after query
+	if idx < maxSeqLen {
+		tokenIDs[idx] = sepTokenID
 		attentionMask[idx] = 1
 		tokenTypeIDs[idx] = 0
 		idx++
 	}
 
+	// Add document tokens
 	for _, t := range doc {
-		if idx >= d.maxSeqLen-1 {
+		if idx >= maxSeqLen-1 { // Leave room for final [SEP]
 			break
 		}
 		tokenIDs[idx] = t
 		attentionMask[idx] = 1
-		tokenTypeIDs[idx] = 1
+		tokenTypeIDs[idx] = 1 // Different segment for document
 		idx++
 	}
 
-	if idx < d.maxSeqLen {
-		tokenIDs[idx] = d.sepTokenID
+	// Add final [SEP]
+	if idx < maxSeqLen {
+		tokenIDs[idx] = sepTokenID
 		attentionMask[idx] = 1
 		tokenTypeIDs[idx] = 1
 		idx++
 	}
 
-	for ; idx < d.maxSeqLen; idx++ {
-		tokenIDs[idx] = d.padTokenID
+	// Pad the rest
+	for ; idx < maxSeqLen; idx++ {
+		tokenIDs[idx] = padTokenID
 		attentionMask[idx] = 0
 		tokenTypeIDs[idx] = 0
 	}
 
 	return tokenIDs, attentionMask, tokenTypeIDs
 }
-
-// Helper functions
 
 func flatten2DInt32(data [][]int32) []int32 {
 	if len(data) == 0 {
@@ -429,6 +389,10 @@ func flatten2DInt32(data [][]int32) []int32 {
 	seqLen := len(data[0])
 	flat := make([]int32, len(data)*seqLen)
 	for i, row := range data {
+		// Validate that all rows have the same length as the first row
+		if len(row) != seqLen {
+			panic(fmt.Sprintf("flatten2DInt32: inconsistent row lengths - expected %d, got %d at row %d", seqLen, len(row), i))
+		}
 		copy(flat[i*seqLen:], row)
 	}
 	return flat

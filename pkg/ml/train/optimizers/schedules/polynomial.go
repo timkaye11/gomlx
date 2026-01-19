@@ -171,9 +171,13 @@ func (c *PolynomialConfig) Done() {
 	step := c.getStepNode(PolynomialScope)
 
 	// Calculate decay steps (total - warmup)
+	// Note: getAdjustedTotalSteps() will return totalSteps - warmupSteps.
+	// If this is <= 0, it means warmupSteps >= totalSteps, which is caught
+	// by the validation above. This check is defensive programming.
 	decaySteps := c.getAdjustedTotalSteps()
 	if decaySteps <= 0 {
-		decaySteps = 1 // Avoid division by zero
+		exceptions.Panicf("polynomial schedule: invalid configuration - totalSteps (%d) must be greater than warmupSteps (%d)",
+			c.totalSteps, c.warmupSteps)
 	}
 
 	// Adjusted step for decay calculation (step - warmup)
@@ -195,8 +199,7 @@ func (c *PolynomialConfig) Done() {
 	progress = MinScalar(progress, 1.0)
 
 	// Polynomial decay: decay = (1 - progress) ^ power
-	oneMinusProgress := SubScalar(ScalarOne(g, c.dtype), 0.0)
-	oneMinusProgress = Sub(oneMinusProgress, progress)
+	oneMinusProgress := OneMinus(progress)
 	oneMinusProgress = MaxScalar(oneMinusProgress, 0.0) // Ensure non-negative for Pow
 
 	var decay *Node

@@ -133,9 +133,13 @@ func (c *LinearConfig) Done() {
 	step := c.getStepNode(LinearScope)
 
 	// Calculate decay steps (total - warmup)
+	// Note: getAdjustedTotalSteps() will return totalSteps - warmupSteps.
+	// If this is <= 0, it means warmupSteps >= totalSteps, which is caught
+	// by the validation above. This check is defensive programming.
 	decaySteps := c.getAdjustedTotalSteps()
 	if decaySteps <= 0 {
-		decaySteps = 1 // Avoid division by zero
+		exceptions.Panicf("linear schedule: invalid configuration - totalSteps (%d) must be greater than warmupSteps (%d)",
+			c.totalSteps, c.warmupSteps)
 	}
 
 	// Adjusted step for decay calculation (step - warmup)

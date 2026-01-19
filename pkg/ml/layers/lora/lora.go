@@ -70,6 +70,9 @@ type Config struct {
 	// TargetModules specifies which module types to apply LoRA to.
 	// Common targets: "query", "key", "value", "output", "dense".
 	// Empty means apply to all compatible layers.
+	//
+	// Note: This field is currently reserved for future use and has no effect.
+	// LoRA is applied wherever Dense() or Apply() is called explicitly.
 	TargetModules []string
 }
 
@@ -328,6 +331,17 @@ func CountBaseParameters(ctx *context.Context) int64 {
 //
 // Note: This is a destructive operation. The LoRA weights should be
 // removed or zeroed after merging.
+//
+// TODO: This function is currently a stub and does nothing. To merge LoRA weights
+// into base weights, you must manually compute the merged weights using graph operations:
+//
+//	scale := config.Scale()
+//	loraA := ctx.Variable("lora_A").Value()
+//	loraB := ctx.Variable("lora_B").Value()
+//	baseWeights := ctx.Variable("weights").Value()
+//	mergedWeights := Add(baseWeights, MulScalar(Dot(loraA, loraB), scale))
+//
+// Then save the merged weights and load them into a model without LoRA layers.
 func MergeLoRAWeights(ctx *context.Context, config *Config) error {
 	// This would require tensor manipulation outside the graph
 	// which is more complex. For now, we provide the formula
