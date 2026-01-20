@@ -74,6 +74,8 @@ type baseWeightInfo struct {
 }
 
 // findBaseWeightsWithAdapters finds base weight variables that have corresponding adapter variables.
+// If adapterName is non-empty, only considers adapter variables whose scope contains the adapter name.
+// If adapterName is empty, considers all adapter variables.
 func findBaseWeightsWithAdapters(ctx *context.Context, adapterName string) []baseWeightInfo {
 	var results []baseWeightInfo
 
@@ -84,6 +86,10 @@ func findBaseWeightsWithAdapters(ctx *context.Context, adapterName string) []bas
 	for v := range ctx.IterVariables() {
 		name := v.ParameterName()
 		if isAdapterVarName(name) {
+			// If adapterName is specified, only consider variables belonging to that adapter
+			if adapterName != "" && !strings.Contains(name, adapterName) {
+				continue
+			}
 			// Extract the scope (everything before the adapter variable name)
 			scope := extractAdapterScope(name)
 			scopesWithAdapters[scope] = true
@@ -189,57 +195,16 @@ func extractBaseScope(name string) string {
 	return strings.Join(parts[:len(parts)-1], "/")
 }
 
-// UnmergeAdapter reverts a merged adapter back to its pre-merged state.
-// This is only possible if the original base weights were saved before merging.
+// TODO: Future enhancements for merge functionality:
 //
-// Note: This operation requires the original base weights checkpoint.
-// It's generally recommended to keep a backup before merging.
-func UnmergeAdapter(backend backends.Backend, ctx *context.Context, adapter Adapter, originalWeightsPath string) error {
-	if adapter == nil {
-		return errors.New("adapter is nil")
-	}
-
-	if !adapter.IsMerged() {
-		return errors.New("adapter is not merged")
-	}
-
-	// Load original weights from checkpoint
-	// (This would require the context checkpoint loading functionality)
-	// For now, this is a placeholder
-	_ = originalWeightsPath
-
-	return errors.New("UnmergeAdapter not yet implemented - requires original weights checkpoint")
-}
-
-// SaveMergedModel saves the merged model weights (without adapter variables).
-// This is useful for deploying a fine-tuned model without adapter overhead.
+// UnmergeAdapter - Revert a merged adapter back to its pre-merged state.
+// This would require saving original weights before merging and loading them back.
+// Implementation blocked on: context checkpoint loading functionality.
 //
-// Parameters:
-//   - ctx: Context with merged weights
-//   - path: Path to save the checkpoint
-//
-// Returns: Error if saving fails
-func SaveMergedModel(ctx *context.Context, path string) error {
-	// Create a filtered view that excludes adapter variables
-	filteredVars := make(map[string]*context.Variable)
-
-	for v := range ctx.IterVariables() {
-		name := v.ParameterName()
-		if !isAdapterVarName(name) {
-			filteredVars[name] = v
-		}
-	}
-
-	if len(filteredVars) == 0 {
-		return errors.New("no non-adapter variables found to save")
-	}
-
-	// Use the existing context checkpoint functionality
-	// This would integrate with context.SaveCheckpoint once available
-	_ = path
-
-	return errors.New("SaveMergedModel requires context checkpoint integration - use context.SaveCheckpoint for now")
-}
+// SaveMergedModel - Save merged model weights without adapter variables.
+// This would be useful for deploying a fine-tuned model without adapter overhead.
+// Implementation blocked on: context checkpoint integration.
+// Workaround: Use context.SaveCheckpoint directly after merging.
 
 // MergeOptions provides configuration for the merge operation.
 type MergeOptions struct {
