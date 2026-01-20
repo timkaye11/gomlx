@@ -31,6 +31,10 @@ const (
 
 	// AdapterTypeDoRA is Weight-Decomposed LoRA with magnitude/direction decomposition.
 	AdapterTypeDoRA AdapterType = "dora"
+
+	// AdapterTypeIA3 is Infused Adapter by Inhibiting and Amplifying Inner Activations.
+	// IA³ uses learned rescaling vectors instead of low-rank matrices.
+	AdapterTypeIA3 AdapterType = "ia3"
 )
 
 // AdapterConfig is the base interface for all adapter configurations.

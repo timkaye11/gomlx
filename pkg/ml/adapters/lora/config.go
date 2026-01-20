@@ -3,6 +3,8 @@
 package lora
 
 import (
+	"math"
+
 	"github.com/gomlx/gomlx/pkg/ml/adapters"
 )
 
@@ -13,7 +15,7 @@ import (
 //	deltaW = scale * (A @ B)
 //
 // where A has shape [inputDim, rank] and B has shape [rank, outputDim].
-// The scale factor is alpha/rank.
+// The scale factor is alpha/rank (or alpha/sqrt(rank) for rsLoRA).
 type Config struct {
 	adapters.BaseConfig
 
@@ -22,7 +24,8 @@ type Config struct {
 	// Typical values: 4, 8, 16, 32, 64.
 	rank int
 
-	// Alpha is the scaling factor. The LoRA output is scaled by alpha/rank.
+	// Alpha is the scaling factor. The LoRA output is scaled by alpha/rank
+	// (or alpha/sqrt(rank) if UseRSLoRA is true).
 	// This allows tuning the magnitude of LoRA updates relative to pretrained weights.
 	// Typical values: 16, 32, or same as rank.
 	alpha float64
@@ -30,6 +33,26 @@ type Config struct {
 	// Dropout is the dropout rate applied to the LoRA path (before scaling).
 	// Set to 0 to disable.
 	dropout float64
+
+	// UseRSLoRA enables Rank-Stabilized LoRA scaling.
+	// When true, scale = alpha / sqrt(rank) instead of alpha / rank.
+	// This provides more stable training across different rank values.
+	// Reference: "A Rank Stabilization Scaling Factor for Fine-Tuning with LoRA"
+	// Default: false
+	UseRSLoRA bool
+
+	// UseLoRAPlus enables LoRA+ which uses different learning rates for A and B matrices.
+	// When true, the B matrix uses learningRate * LoRAPlusRatio.
+	// Reference: "LoRA+: Efficient Low Rank Adaptation of Large Models"
+	// Default: false
+	UseLoRAPlus bool
+
+	// LoRAPlusRatio is the learning rate ratio for B matrix relative to A matrix.
+	// Only used when UseLoRAPlus is true.
+	// B_lr = A_lr * LoRAPlusRatio
+	// Typical value: 16.0 (recommended in the LoRA+ paper)
+	// Default: 16.0
+	LoRAPlusRatio float64
 }
 
 // NewConfig creates a new LoRA configuration with sensible defaults.
@@ -39,12 +62,15 @@ type Config struct {
 //   - Alpha: 16.0
 //   - Dropout: 0.0
 //   - Enabled: true
+//   - UseLoRAPlus: false
+//   - LoRAPlusRatio: 16.0 (default when enabled)
 func NewConfig() *Config {
 	return &Config{
-		BaseConfig: adapters.NewBaseConfig(),
-		rank:       8,
-		alpha:      16.0,
-		dropout:    0.0,
+		BaseConfig:    adapters.NewBaseConfig(),
+		rank:          8,
+		alpha:         16.0,
+		dropout:       0.0,
+		LoRAPlusRatio: 16.0, // Default ratio when LoRA+ is enabled
 	}
 }
 
@@ -116,10 +142,37 @@ func (c *Config) SetDropout(dropout float64) *Config {
 	return c
 }
 
-// Scale returns the scaling factor (alpha / rank).
+// Scale returns the scaling factor.
+// Returns alpha / rank for standard LoRA, or alpha / sqrt(rank) for rsLoRA.
 func (c *Config) Scale() float64 {
 	if c.rank == 0 {
 		return 0
 	}
+	if c.UseRSLoRA {
+		return c.alpha / math.Sqrt(float64(c.rank))
+	}
 	return c.alpha / float64(c.rank)
+}
+
+// SetUseRSLoRA enables or disables Rank-Stabilized LoRA scaling.
+func (c *Config) SetUseRSLoRA(use bool) *Config {
+	c.UseRSLoRA = use
+	return c
+}
+
+// SetUseLoRAPlus enables or disables LoRA+ (different learning rates for A/B).
+// When enabled, B matrix will use lr * LoRAPlusRatio while A uses lr.
+func (c *Config) SetUseLoRAPlus(use bool) *Config {
+	c.UseLoRAPlus = use
+	return c
+}
+
+// SetLoRAPlusRatio sets the learning rate ratio for LoRA+ B matrix.
+// B_lr = A_lr * ratio. Default is 16.0.
+func (c *Config) SetLoRAPlusRatio(ratio float64) *Config {
+	if ratio <= 0 {
+		panic("LoRA+ ratio must be positive")
+	}
+	c.LoRAPlusRatio = ratio
+	return c
 }
