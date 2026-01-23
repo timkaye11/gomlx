@@ -5,13 +5,21 @@ package simplego
 import (
 	"math"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"github.com/gomlx/gomlx/pkg/core/dtypes"
+	"github.com/gomlx/gomlx/pkg/core/shapes"
 )
+
+// testRand returns a seeded random source for reproducible tests.
+func testRand() *rand.Rand {
+	return rand.New(rand.NewSource(42))
+}
 
 // TestQuantizedDotNF4Correctness verifies QuantizedDot produces correct results for NF4.
 func TestQuantizedDotNF4Correctness(t *testing.T) {
+	rng := testRand()
 	backendIface, err := New("")
 	if err != nil {
 		t.Fatalf("Failed to create backend: %v", err)
@@ -26,13 +34,13 @@ func TestQuantizedDotNF4Correctness(t *testing.T) {
 	// Create random input
 	input := make([]float32, M*K)
 	for i := range input {
-		input[i] = rand.Float32()*2 - 1
+		input[i] = rng.Float32()*2 - 1
 	}
 
 	// Create random weights and quantize to NF4
 	weights := make([]float32, K*N)
 	for i := range weights {
-		weights[i] = rand.Float32()*2 - 1
+		weights[i] = rng.Float32()*2 - 1
 	}
 
 	// Quantize weights to NF4
@@ -156,6 +164,7 @@ func TestQuantizedDotNF4Correctness(t *testing.T) {
 
 // TestQuantizedDotInt4Correctness verifies QuantizedDot produces correct results for Int4.
 func TestQuantizedDotInt4Correctness(t *testing.T) {
+	rng := testRand()
 	backendIface, err := New("")
 	if err != nil {
 		t.Fatalf("Failed to create backend: %v", err)
@@ -170,13 +179,13 @@ func TestQuantizedDotInt4Correctness(t *testing.T) {
 	// Create random input
 	input := make([]float32, M*K)
 	for i := range input {
-		input[i] = rand.Float32()*2 - 1
+		input[i] = rng.Float32()*2 - 1
 	}
 
 	// Create random weights and quantize to Int4
 	weights := make([]float32, K*N)
 	for i := range weights {
-		weights[i] = rand.Float32()*2 - 1
+		weights[i] = rng.Float32()*2 - 1
 	}
 
 	// Quantize weights to Int4
@@ -302,6 +311,7 @@ func TestQuantizedDotInt4Correctness(t *testing.T) {
 
 // TestQuantizedDotInt8Correctness verifies QuantizedDotInt8 produces correct results.
 func TestQuantizedDotInt8Correctness(t *testing.T) {
+	rng := testRand()
 	backendIface, err := New("")
 	if err != nil {
 		t.Fatalf("Failed to create backend: %v", err)
@@ -316,13 +326,13 @@ func TestQuantizedDotInt8Correctness(t *testing.T) {
 	// Create random input
 	input := make([]float32, M*K)
 	for i := range input {
-		input[i] = rand.Float32()*2 - 1
+		input[i] = rng.Float32()*2 - 1
 	}
 
 	// Create random weights and quantize to Int8
 	weights := make([]float32, K*N)
 	for i := range weights {
-		weights[i] = rand.Float32()*2 - 1
+		weights[i] = rng.Float32()*2 - 1
 	}
 
 	// Quantize weights to Int8
@@ -429,6 +439,247 @@ func TestQuantizedDotInt8Correctness(t *testing.T) {
 	tolerance := float32(1e-5)
 	if maxDiff > tolerance {
 		t.Errorf("Max difference between fused and naive: %v (tolerance: %v)", maxDiff, tolerance)
+	}
+}
+
+// TestQuantizedDotValidation tests the validation logic in QuantizedDot graph-building API.
+func TestQuantizedDotValidation(t *testing.T) {
+	backendIface, err := New("")
+	if err != nil {
+		t.Fatalf("Failed to create backend: %v", err)
+	}
+	backend := backendIface.(*Backend)
+	defer backend.Finalize()
+
+	builder := backend.Builder("test_quantized_dot_validation")
+	fn := builder.Main().(*Function)
+
+	M, K, N := 4, 8, 16
+	groupSize := 8
+	numGroups := (N + groupSize - 1) / groupSize
+
+	// Create valid parameters
+	inputParam, err := fn.Parameter("input", shapes.Make(dtypes.Float32, M, K), nil)
+	if err != nil {
+		t.Fatalf("Failed to create input parameter: %v", err)
+	}
+	packedParam, err := fn.Parameter("packed", shapes.Make(dtypes.Uint8, (K*N+1)/2), nil)
+	if err != nil {
+		t.Fatalf("Failed to create packed parameter: %v", err)
+	}
+	scalesParam, err := fn.Parameter("scales", shapes.Make(dtypes.Float32, K, numGroups), nil)
+	if err != nil {
+		t.Fatalf("Failed to create scales parameter: %v", err)
+	}
+
+	// Test valid call succeeds
+	_, err = fn.QuantizedDot(inputParam, packedParam, scalesParam, M, K, N, groupSize, QuantTypeNF4)
+	if err != nil {
+		t.Errorf("Valid QuantizedDot call failed: %v", err)
+	}
+
+	// Test wrong input dtype
+	wrongInputParam, _ := fn.Parameter("wrong_input", shapes.Make(dtypes.Float64, M, K), nil)
+	_, err = fn.QuantizedDot(wrongInputParam, packedParam, scalesParam, M, K, N, groupSize, QuantTypeNF4)
+	if err == nil || !strings.Contains(err.Error(), "Float32") {
+		t.Errorf("Expected error for wrong input dtype, got: %v", err)
+	}
+
+	// Test wrong packed weights dtype
+	wrongPackedParam, _ := fn.Parameter("wrong_packed", shapes.Make(dtypes.Int8, (K*N+1)/2), nil)
+	_, err = fn.QuantizedDot(inputParam, wrongPackedParam, scalesParam, M, K, N, groupSize, QuantTypeNF4)
+	if err == nil || !strings.Contains(err.Error(), "Uint8") {
+		t.Errorf("Expected error for wrong packed dtype, got: %v", err)
+	}
+
+	// Test wrong input shape (wrong M)
+	wrongShapeInput, _ := fn.Parameter("wrong_shape_input", shapes.Make(dtypes.Float32, M+1, K), nil)
+	_, err = fn.QuantizedDot(wrongShapeInput, packedParam, scalesParam, M, K, N, groupSize, QuantTypeNF4)
+	if err == nil || !strings.Contains(err.Error(), "input shape mismatch") {
+		t.Errorf("Expected error for wrong input shape, got: %v", err)
+	}
+
+	// Test wrong packed size
+	wrongSizePacked, _ := fn.Parameter("wrong_size_packed", shapes.Make(dtypes.Uint8, 10), nil)
+	_, err = fn.QuantizedDot(inputParam, wrongSizePacked, scalesParam, M, K, N, groupSize, QuantTypeNF4)
+	if err == nil || !strings.Contains(err.Error(), "packedWeights size mismatch") {
+		t.Errorf("Expected error for wrong packed size, got: %v", err)
+	}
+
+	// Test wrong scales shape
+	wrongScales, _ := fn.Parameter("wrong_scales", shapes.Make(dtypes.Float32, K+1, numGroups), nil)
+	_, err = fn.QuantizedDot(inputParam, packedParam, wrongScales, M, K, N, groupSize, QuantTypeNF4)
+	if err == nil || !strings.Contains(err.Error(), "scales shape mismatch") {
+		t.Errorf("Expected error for wrong scales shape, got: %v", err)
+	}
+
+	// Test invalid groupSize
+	_, err = fn.QuantizedDot(inputParam, packedParam, scalesParam, M, K, N, 0, QuantTypeNF4)
+	if err == nil || !strings.Contains(err.Error(), "groupSize must be positive") {
+		t.Errorf("Expected error for zero groupSize, got: %v", err)
+	}
+}
+
+// TestQuantizedDotInt8Validation tests the validation logic in QuantizedDotInt8 graph-building API.
+func TestQuantizedDotInt8Validation(t *testing.T) {
+	backendIface, err := New("")
+	if err != nil {
+		t.Fatalf("Failed to create backend: %v", err)
+	}
+	backend := backendIface.(*Backend)
+	defer backend.Finalize()
+
+	builder := backend.Builder("test_quantized_dot_int8_validation")
+	fn := builder.Main().(*Function)
+
+	M, K, N := 4, 8, 16
+	groupSize := 8
+	numGroups := (N + groupSize - 1) / groupSize
+
+	// Create valid parameters
+	inputParam, err := fn.Parameter("input", shapes.Make(dtypes.Float32, M, K), nil)
+	if err != nil {
+		t.Fatalf("Failed to create input parameter: %v", err)
+	}
+	quantizedParam, err := fn.Parameter("quantized", shapes.Make(dtypes.Int8, K, N), nil)
+	if err != nil {
+		t.Fatalf("Failed to create quantized parameter: %v", err)
+	}
+	scalesParam, err := fn.Parameter("scales", shapes.Make(dtypes.Float32, K, numGroups), nil)
+	if err != nil {
+		t.Fatalf("Failed to create scales parameter: %v", err)
+	}
+
+	// Test valid call succeeds
+	_, err = fn.QuantizedDotInt8(inputParam, quantizedParam, scalesParam, M, K, N, groupSize)
+	if err != nil {
+		t.Errorf("Valid QuantizedDotInt8 call failed: %v", err)
+	}
+
+	// Test wrong quantized weights dtype
+	wrongQuantizedParam, _ := fn.Parameter("wrong_quantized", shapes.Make(dtypes.Uint8, K, N), nil)
+	_, err = fn.QuantizedDotInt8(inputParam, wrongQuantizedParam, scalesParam, M, K, N, groupSize)
+	if err == nil || !strings.Contains(err.Error(), "Int8") {
+		t.Errorf("Expected error for wrong quantized dtype, got: %v", err)
+	}
+
+	// Test wrong quantized shape
+	wrongShapeQuantized, _ := fn.Parameter("wrong_shape_quantized", shapes.Make(dtypes.Int8, K, N+1), nil)
+	_, err = fn.QuantizedDotInt8(inputParam, wrongShapeQuantized, scalesParam, M, K, N, groupSize)
+	if err == nil || !strings.Contains(err.Error(), "quantizedWeights shape mismatch") {
+		t.Errorf("Expected error for wrong quantized shape, got: %v", err)
+	}
+
+	// Test invalid groupSize
+	_, err = fn.QuantizedDotInt8(inputParam, quantizedParam, scalesParam, M, K, N, -1, )
+	if err == nil || !strings.Contains(err.Error(), "groupSize must be positive") {
+		t.Errorf("Expected error for negative groupSize, got: %v", err)
+	}
+}
+
+// TestQuantizedDotEdgeCases tests edge cases like M=1, N=1, groupSize > N.
+func TestQuantizedDotEdgeCases(t *testing.T) {
+	rng := testRand()
+	backendIface, err := New("")
+	if err != nil {
+		t.Fatalf("Failed to create backend: %v", err)
+	}
+	backend := backendIface.(*Backend)
+	defer backend.Finalize()
+
+	testCases := []struct {
+		name      string
+		M, K, N   int
+		groupSize int
+	}{
+		{"M=1", 1, 16, 32, 8},
+		{"N=1", 4, 16, 1, 1},
+		{"K=1", 4, 1, 16, 8},
+		{"groupSize > N", 4, 16, 8, 32},
+		{"groupSize == N", 4, 16, 16, 16},
+		{"small all", 1, 1, 1, 1},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			M, K, N := tc.M, tc.K, tc.N
+			groupSize := tc.groupSize
+			numGroups := (N + groupSize - 1) / groupSize
+
+			// Create random input
+			input := make([]float32, M*K)
+			for i := range input {
+				input[i] = rng.Float32()*2 - 1
+			}
+
+			// Create and quantize weights
+			packed := make([]uint8, (K*N+1)/2)
+			scales := make([]float32, K*numGroups)
+
+			for k := 0; k < K; k++ {
+				for g := 0; g < numGroups; g++ {
+					scales[k*numGroups+g] = rng.Float32() + 0.1
+					startCol := g * groupSize
+					endCol := min(startCol+groupSize, N)
+					for n := startCol; n < endCol; n++ {
+						idx := k*N + n
+						quantIdx := rng.Intn(16)
+						packedIdx := idx / 2
+						if idx%2 == 0 {
+							packed[packedIdx] = (packed[packedIdx] & 0xF0) | uint8(quantIdx)
+						} else {
+							packed[packedIdx] = (packed[packedIdx] & 0x0F) | (uint8(quantIdx) << 4)
+						}
+					}
+				}
+			}
+
+			params := &quantizedDotNodeData{
+				M:         M,
+				K:         K,
+				N:         N,
+				GroupSize: groupSize,
+				QuantType: QuantTypeNF4,
+			}
+
+			node := &Node{data: params}
+			node.shape.DType = dtypes.Float32
+			node.shape.Dimensions = []int{M, N}
+
+			inputBuf := &Buffer{flat: input}
+			inputBuf.shape.DType = dtypes.Float32
+			inputBuf.shape.Dimensions = []int{M, K}
+			packedBuf := &Buffer{flat: packed}
+			packedBuf.shape.DType = dtypes.Uint8
+			packedBuf.shape.Dimensions = []int{len(packed)}
+			scalesBuf := &Buffer{flat: scales}
+			scalesBuf.shape.DType = dtypes.Float32
+			scalesBuf.shape.Dimensions = []int{K, numGroups}
+
+			output, err := execQuantizedDot(backend, node, []*Buffer{inputBuf, packedBuf, scalesBuf}, nil)
+			if err != nil {
+				t.Fatalf("execQuantizedDot failed: %v", err)
+			}
+
+			// Verify output shape
+			outputFlat := output.flat.([]float32)
+			if len(outputFlat) != M*N {
+				t.Errorf("Output size mismatch: expected %d, got %d", M*N, len(outputFlat))
+			}
+		})
+	}
+}
+
+// TestQuantTypeString verifies the String method for QuantType.
+func TestQuantTypeString(t *testing.T) {
+	if QuantTypeNF4.String() != "NF4" {
+		t.Errorf("QuantTypeNF4.String() = %q, want %q", QuantTypeNF4.String(), "NF4")
+	}
+	if QuantTypeInt4.String() != "Int4" {
+		t.Errorf("QuantTypeInt4.String() = %q, want %q", QuantTypeInt4.String(), "Int4")
+	}
+	if QuantType(99).String() != "Unknown" {
+		t.Errorf("QuantType(99).String() = %q, want %q", QuantType(99).String(), "Unknown")
 	}
 }
 

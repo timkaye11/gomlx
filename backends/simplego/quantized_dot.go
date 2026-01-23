@@ -24,6 +24,18 @@ const (
 	QuantTypeInt4
 )
 
+// String returns the string representation of the QuantType.
+func (q QuantType) String() string {
+	switch q {
+	case QuantTypeNF4:
+		return "NF4"
+	case QuantTypeInt4:
+		return "Int4"
+	default:
+		return "Unknown"
+	}
+}
+
 // quantizedDotNodeData holds metadata for QuantizedDot execution.
 type quantizedDotNodeData struct {
 	// Dimensions
@@ -52,6 +64,12 @@ func (q *quantizedDotInt8NodeData) EqualNodeData(other nodeDataComparable) bool 
 	o := other.(*quantizedDotInt8NodeData)
 	return q.M == o.M && q.K == o.K && q.N == o.N && q.GroupSize == o.GroupSize
 }
+
+// Compile-time checks that node data types implement nodeDataComparable.
+var (
+	_ nodeDataComparable = (*quantizedDotNodeData)(nil)
+	_ nodeDataComparable = (*quantizedDotInt8NodeData)(nil)
+)
 
 // QuantizedDot performs fused dequantization and matrix multiplication.
 // This dequantizes weights on-the-fly during matmul, reducing memory usage from O(K*N) to O(K).
@@ -94,6 +112,28 @@ func (f *Function) QuantizedDot(
 	if input.shape.Dimensions[0] != M || input.shape.Dimensions[1] != K {
 		return nil, errors.Errorf("QuantizedDot: input shape mismatch, expected [%d, %d], got %v",
 			M, K, input.shape.Dimensions)
+	}
+
+	// Validate groupSize (must be done before division)
+	if groupSize <= 0 {
+		return nil, errors.Errorf("QuantizedDot: groupSize must be positive, got %d", groupSize)
+	}
+
+	// Validate packedWeights shape (4-bit packing: 2 values per byte)
+	expectedPackedSize := (K*N + 1) / 2
+	if packedWeights.shape.Size() != expectedPackedSize {
+		return nil, errors.Errorf("QuantizedDot: packedWeights size mismatch, expected %d bytes for [%d, %d] 4-bit weights, got %d",
+			expectedPackedSize, K, N, packedWeights.shape.Size())
+	}
+
+	// Validate scales shape
+	numGroups := (N + groupSize - 1) / groupSize
+	if scales.shape.Rank() != 2 {
+		return nil, errors.Errorf("QuantizedDot: scales must be 2D [K, numGroups], got rank %d", scales.shape.Rank())
+	}
+	if scales.shape.Dimensions[0] != K || scales.shape.Dimensions[1] != numGroups {
+		return nil, errors.Errorf("QuantizedDot: scales shape mismatch, expected [%d, %d], got %v",
+			K, numGroups, scales.shape.Dimensions)
 	}
 
 	// Create node data
@@ -142,6 +182,39 @@ func (f *Function) QuantizedDotInt8(
 		return nil, errors.Errorf("QuantizedDotInt8: scales must be Float32, got %s", scales.shape.DType)
 	}
 
+	// Validate input shape
+	if input.shape.Rank() != 2 {
+		return nil, errors.Errorf("QuantizedDotInt8: input must be 2D [M, K], got rank %d", input.shape.Rank())
+	}
+	if input.shape.Dimensions[0] != M || input.shape.Dimensions[1] != K {
+		return nil, errors.Errorf("QuantizedDotInt8: input shape mismatch, expected [%d, %d], got %v",
+			M, K, input.shape.Dimensions)
+	}
+
+	// Validate groupSize (must be done before division)
+	if groupSize <= 0 {
+		return nil, errors.Errorf("QuantizedDotInt8: groupSize must be positive, got %d", groupSize)
+	}
+
+	// Validate quantizedWeights shape
+	if quantizedWeights.shape.Rank() != 2 {
+		return nil, errors.Errorf("QuantizedDotInt8: quantizedWeights must be 2D [K, N], got rank %d", quantizedWeights.shape.Rank())
+	}
+	if quantizedWeights.shape.Dimensions[0] != K || quantizedWeights.shape.Dimensions[1] != N {
+		return nil, errors.Errorf("QuantizedDotInt8: quantizedWeights shape mismatch, expected [%d, %d], got %v",
+			K, N, quantizedWeights.shape.Dimensions)
+	}
+
+	// Validate scales shape
+	numGroups := (N + groupSize - 1) / groupSize
+	if scales.shape.Rank() != 2 {
+		return nil, errors.Errorf("QuantizedDotInt8: scales must be 2D [K, numGroups], got rank %d", scales.shape.Rank())
+	}
+	if scales.shape.Dimensions[0] != K || scales.shape.Dimensions[1] != numGroups {
+		return nil, errors.Errorf("QuantizedDotInt8: scales shape mismatch, expected [%d, %d], got %v",
+			K, numGroups, scales.shape.Dimensions)
+	}
+
 	// Create node data
 	nodeData := &quantizedDotInt8NodeData{
 		M:         M,
@@ -178,8 +251,16 @@ var NF4Values = [16]float32{
 }
 
 // execQuantizedDot executes fused quantized matmul for NF4/Int4.
+//
+// Design: This implementation processes one output column at a time, dequantizing weights
+// on-the-fly to minimize memory usage (O(K) for the weight column buffer instead of O(K*N)
+// for fully dequantized weights). The trade-off is that output writes are strided (column-major),
+// which is less cache-friendly than row-major access. For production workloads, consider:
+// - Tiled/blocked execution for better cache locality
+// - SIMD optimization for the inner loops
+// - Multi-threading across output columns or rows
 func execQuantizedDot(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*Buffer, error) {
-	input := inputs[0]       // [M, K]
+	input := inputs[0]         // [M, K]
 	packedWeights := inputs[1] // packed uint8
 	scales := inputs[2]        // [K, numGroups]
 
@@ -250,8 +331,9 @@ func execQuantizedDot(backend *Backend, node *Node, inputs []*Buffer, _ []bool) 
 }
 
 // execQuantizedDotInt8 executes fused quantized matmul for Int8.
+// See execQuantizedDot for design notes on the column-wise processing approach.
 func execQuantizedDotInt8(backend *Backend, node *Node, inputs []*Buffer, _ []bool) (*Buffer, error) {
-	input := inputs[0]           // [M, K]
+	input := inputs[0]            // [M, K]
 	quantizedWeights := inputs[1] // [K, N] int8
 	scales := inputs[2]           // [K, numGroups]
 

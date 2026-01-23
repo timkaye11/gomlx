@@ -146,6 +146,7 @@ const (
 	OpTypeQuantizedDot
 
 	// OpTypeQuantizedDotInt8 is like OpTypeQuantizedDot but for Int8 quantized weights.
+	// This is a simplego-specific optimization for quantized weight inference.
 	OpTypeQuantizedDotInt8
 
 	// OpTypeLast should always be kept the last, it is used as a counter/marker for OpType.
