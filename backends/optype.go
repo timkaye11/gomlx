@@ -139,6 +139,15 @@ const (
 	// This is an internal optimization used by the simplego backend.
 	OpTypeBlockForDotGeneral
 
+	// OpTypeQuantizedDot performs fused dequantization and matrix multiplication.
+	// This is a simplego-specific optimization for quantized weight inference.
+	// It dequantizes weights on-the-fly during matmul, reducing memory usage from O(K*N) to O(K).
+	// Used for NF4 and Int4 quantized weights (packed as uint8).
+	OpTypeQuantizedDot
+
+	// OpTypeQuantizedDotInt8 is like OpTypeQuantizedDot but for Int8 quantized weights.
+	OpTypeQuantizedDotInt8
+
 	// OpTypeLast should always be kept the last, it is used as a counter/marker for OpType.
 	OpTypeLast
 )
