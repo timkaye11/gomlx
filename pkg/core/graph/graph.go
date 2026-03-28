@@ -304,6 +304,12 @@ func (g *Graph) CurrentFunc() *Function {
 	return g.currentFunc
 }
 
+// Builder returns the backend builder associated with the graph while it is in
+// graph-building/compilation state.
+func (g *Graph) Builder() backends.Builder {
+	return g.builder
+}
+
 // IsMainFunc returns whether the current Graph scope is the main function,
 // that is, if we are not defining a separate top-level function or a closure.
 //

@@ -378,6 +378,13 @@ func (e *Exec) Finalize() {
 	e.exec.Finalize()
 }
 
+// SetCompileHook configures an optional advanced compile hook on the wrapped
+// graph executor.
+func (e *Exec) SetCompileHook(fn graph.CompileHook) *Exec {
+	e.exec.SetCompileHook(fn)
+	return e
+}
+
 // setSideParams is used by computation.Exec.SetSideParamsHook to set up
 // the variable values as parameters just before graph execution.
 //
@@ -754,6 +761,12 @@ func (e *Exec) SetContext(context *Context) *Exec {
 func (e *Exec) Exec(args ...any) ([]*tensors.Tensor, error) {
 	outputs, _, err := e.ExecWithGraph(args...)
 	return outputs, err
+}
+
+// Prepare materializes inputs, builds/compiles the graph for their shapes if
+// needed, and returns the cached graph plus prepared input buffers.
+func (e *Exec) Prepare(args ...any) (*graph.PreparedCall, error) {
+	return e.exec.Prepare(args...)
 }
 
 // ExecWithGraph is similar to Exec, but it also returns the computation graph used in the call.

@@ -80,9 +80,26 @@ type ExecGraphFnOneOutput interface {
 // for Graphs that defines those. Typically, this is used to set the variables of a model.
 type SideParamsFn func(graph *Graph, inputBuffers []backends.Buffer, donate []bool) error
 
+// CompileHook optionally overrides how graphs are finalized/compiled after the
+// graphFn returns its outputs. Advanced users can use this to plug in
+// backend-specific compilation flows.
+//
+// The hook is responsible for calling CurrentFunc().Return(...), and for
+// compiling the graph if desired.
+type CompileHook func(graph *Graph, outputs []*Node, outputShardings []*distributed.ShardingSpec) error
+
 // LoggerFn is the function used to log nodes marked for logging.
 // It is called after the Exec method, with the list of messages and corresponding values of the evaluated nodes.
 type LoggerFn func(graph *Graph, messages []string, values []*tensors.Tensor, nodes []NodeId)
+
+// PreparedCall holds the cached graph and fully materialized inputs for one
+// execution/advanced compile step.
+type PreparedCall struct {
+	Graph         *Graph
+	InputBuffers  []backends.Buffer
+	Donate        []bool
+	DefaultDevice backends.DeviceNum
+}
 
 // Exec creates and executes computation graphs as needed based on the inputs shapes.
 //
@@ -208,6 +225,7 @@ type Exec struct {
 
 	// setSideParams for graphs that take them.
 	setSideParams SideParamsFn
+	compileHook   CompileHook
 	loggerFn      LoggerFn
 
 	// Protects cache structure, pending map, and finalized flag.
@@ -224,7 +242,7 @@ type Exec struct {
 // pendingCompilation tracks an in-flight graph compilation.
 type pendingCompilation struct {
 	argsShapes []shapes.Shape       // shapes being compiled
-	done       chan struct{}         // closed when compilation finishes
+	done       chan struct{}        // closed when compilation finishes
 	entry      *execGraphCacheEntry // result (nil if failed)
 	err        error                // compilation error, if any
 }
@@ -486,6 +504,13 @@ func (e *Exec) SetSideParamsHook(fn SideParamsFn) *Exec {
 	return e
 }
 
+// SetCompileHook configures an optional hook to control how graphs are
+// finalized/compiled after graph construction.
+func (e *Exec) SetCompileHook(fn CompileHook) *Exec {
+	e.compileHook = fn
+	return e
+}
+
 // SetNodeLogger with the function to be called for the nodes marked for logging during execution.
 // If set to nil, nothing will be logged.
 func (e *Exec) SetNodeLogger(loggerFn LoggerFn) {
@@ -518,6 +543,21 @@ func (e *Exec) ExecWithGraphOnDevice(defaultDevice backends.DeviceNum, args ...a
 func (e *Exec) PreCompile(args ...any) error {
 	_, _, err := e.compileAndExecute(false, 0, args...)
 	return err
+}
+
+// Prepare materializes the inputs, builds/compiles the graph for the input
+// shapes if needed, and returns the cached graph plus its prepared input
+// buffers. This is useful for advanced callers that need to execute or compile
+// the graph through a backend-specific path.
+func (e *Exec) Prepare(args ...any) (*PreparedCall, error) {
+	return e.PrepareOnDevice(0, args...)
+}
+
+// PrepareOnDevice is like Prepare but allows selecting the default device for
+// portable single-device execution.
+func (e *Exec) PrepareOnDevice(defaultDevice backends.DeviceNum, args ...any) (*PreparedCall, error) {
+	prepared, _, err := e.prepare(defaultDevice, args...)
+	return prepared, err
 }
 
 // unwrapListOfTensors converts something like []any{[]*tensors.Tensor{t1, t2, ...}} to []any{t1, t2,...}.
@@ -688,8 +728,7 @@ func (e *Exec) expandArgsToTotalParams(g *Graph, argsAsBuffers []backends.Buffer
 //
 // defaultDevice is used for single-device computations that are portable (no fixed device assignment set
 // WithDeviceAssignment). Otherwise, it is ignored.
-func (e *Exec) compileAndExecute(execute bool, defaultDevice backends.DeviceNum, args ...any) (
-	[]*tensors.Tensor, *Graph, error) {
+func (e *Exec) prepare(defaultDevice backends.DeviceNum, args ...any) (*PreparedCall, *execGraphCacheEntry, error) {
 	args = unwrapListOfTensors(args)
 	var err error
 	args, err = unwrapDistributedTensors(e.numDevices, args)
@@ -750,22 +789,38 @@ func (e *Exec) compileAndExecute(execute bool, defaultDevice backends.DeviceNum,
 		}
 	}
 
+	return &PreparedCall{
+		Graph:         g,
+		InputBuffers:  argsAsBuffers,
+		Donate:        argsDonate,
+		DefaultDevice: defaultDevice,
+	}, entry, nil
+}
+
+func (e *Exec) compileAndExecute(execute bool, defaultDevice backends.DeviceNum, args ...any) (
+	[]*tensors.Tensor, *Graph, error) {
+	prepared, entry, err := e.prepare(defaultDevice, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	numDevices := e.numDevices
+
 	// To only pre-compile the graph, return early.
 	if !execute {
-		return nil, g, nil
+		return nil, prepared.Graph, nil
 	}
 
 	// Execute graph: outputs will have (numDevice * entry.numAllOutputs) outputs.
 	var outputs []*tensors.Tensor
 	err = exceptions.TryCatch[error](func() {
-		outputs = g.RunWithBuffers(argsAsBuffers, argsDonate, defaultDevice)
+		outputs = prepared.Graph.RunWithBuffers(prepared.InputBuffers, prepared.Donate, prepared.DefaultDevice)
 	})
 	if err != nil {
-		return nil, nil, errors.WithMessagef(err, "failed to execute graph %q", g.Name())
+		return nil, nil, errors.WithMessagef(err, "failed to execute graph %q", prepared.Graph.Name())
 	}
 	if len(outputs) != entry.numAllOutputs*e.numDevices {
 		return nil, nil, errors.Errorf("expected %d * %d (numDevices) = %d outputs from graph %q, got %d",
-			e.numOutputs, e.numDevices, e.numOutputs*e.numDevices, g.Name(), len(outputs))
+			e.numOutputs, e.numDevices, e.numOutputs*e.numDevices, prepared.Graph.Name(), len(outputs))
 	}
 
 	// Call the logger on logged nodes, even if no node is marked for logging (it serves as a hook).
@@ -778,24 +833,24 @@ func (e *Exec) compileAndExecute(execute bool, defaultDevice backends.DeviceNum,
 			loggerOutputs = outputs[numGraphFnOutputs:entry.numAllOutputs]
 		}
 		// The logger is also called for zero logged messages.
-		e.loggerFn(g, entry.loggedMessages, loggerOutputs, entry.loggedNodeIDs)
+		e.loggerFn(prepared.Graph, entry.loggedMessages, loggerOutputs, entry.loggedNodeIDs)
 	}
 
 	// Remove logged messages from outputs, we need to take slices for each device:
 	if len(entry.loggedMessages) == 0 {
 		// Easiest case: no logged messages, no slice needed.
-		return outputs, g, nil
+		return outputs, prepared.Graph, nil
 	}
 	if numDevices == 1 {
 		// No need to rebuild a new array:
-		return outputs[:numGraphFnOutputs], g, nil
+		return outputs[:numGraphFnOutputs], prepared.Graph, nil
 	}
 	graphFnOutputs := make([]*tensors.Tensor, numDevices*numGraphFnOutputs)
 	for deviceIdx := range numDevices {
 		copy(graphFnOutputs[deviceIdx*numGraphFnOutputs:(deviceIdx+1)*numGraphFnOutputs],
 			outputs[deviceIdx*entry.numAllOutputs:deviceIdx*entry.numAllOutputs+numGraphFnOutputs])
 	}
-	return graphFnOutputs, g, nil
+	return graphFnOutputs, prepared.Graph, nil
 }
 
 // buildAndCompileGraph builds and compiles the graph for the given input shapes.
@@ -954,7 +1009,13 @@ func (e *Exec) buildAndCompileGraph(argsShapes []shapes.Shape, cacheIndex int) (
 	}
 
 	// Compile graph.
-	g.CompileWithSharding(outputs, outputShardingSpecs)
+	if e.compileHook != nil {
+		if err := e.compileHook(g, outputs, outputShardingSpecs); err != nil {
+			return nil, errors.WithMessagef(err, "failed custom compile hook for graph %q", g.Name())
+		}
+	} else {
+		g.CompileWithSharding(outputs, outputShardingSpecs)
+	}
 	entry.argsShapes = make([]shapes.Shape, len(argsShapes))
 	copy(entry.argsShapes, argsShapes)
 	entry.numAllOutputs = len(outputs)
